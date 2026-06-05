@@ -1,0 +1,8 @@
+{
+  "name": "StockWise",
+  "description": "A real-time inventory management system built to track sales checkout, supplier restocking deliveries, low stock safety notifications, and immutable audit logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

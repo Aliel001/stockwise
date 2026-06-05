@@ -1,0 +1,102 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Stock items managed in the system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique product UUID or ID" },
+        "name": { "type": "string", "description": "Product name" },
+        "description": { "type": "string", "description": "Product description" },
+        "quantity": { "type": "number", "description": "Current available quantity in stock" },
+        "purchasePrice": { "type": "number", "description": "Price at which item was bought" },
+        "sellingPrice": { "type": "number", "description": "Price at which item is sold" },
+        "minStock": { "type": "number", "description": "Alert threshold for restocking" },
+        "createdBy": { "type": "string", "description": "Email or user ID who created it" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Time of creation" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Time of last update" }
+      },
+      "required": ["id", "name", "quantity", "purchasePrice", "sellingPrice", "minStock", "createdAt", "updatedAt"]
+    },
+    "StockIn": {
+      "title": "Stock In",
+      "description": "Records containing restocking quantities",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stock-In ID" },
+        "productId": { "type": "string", "description": "Target product ID" },
+        "productName": { "type": "string", "description": "Name at the time of restocking" },
+        "quantity": { "type": "number", "description": "Quantity added to stock" },
+        "supplier": { "type": "string", "description": "Supplier name" },
+        "notes": { "type": "string", "description": "Optional notes" },
+        "performedBy": { "type": "string", "description": "Email or user ID of authorizer" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of restock event" }
+      },
+      "required": ["id", "productId", "productName", "quantity", "performedBy", "createdAt"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "System output transaction representing record-sales",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Sale ID" },
+        "productId": { "type": "string", "description": "Sold product ID" },
+        "productName": { "type": "string", "description": "Product name" },
+        "quantity": { "type": "number", "description": "Number of items sold" },
+        "unitPrice": { "type": "number", "description": "Unit sale price" },
+        "totalPrice": { "type": "number", "description": "Subtotal for transaction" },
+        "performedBy": { "type": "string", "description": "Email or user ID of seller" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of sale" }
+      },
+      "required": ["id", "productId", "productName", "quantity", "unitPrice", "totalPrice", "performedBy", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Critical alerts regarding inventory statuses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Notification ID" },
+        "message": { "type": "string", "description": "Notification content text" },
+        "type": { "type": "string", "enum": ["low_stock", "info"], "description": "Classification group" },
+        "isRead": { "type": "boolean", "description": "Read marker indicator state" },
+        "userEmail": { "type": "string", "description": "Email identifier of the recipient" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Alert generation trigger event timestamp" }
+      },
+      "required": ["id", "message", "type", "isRead", "userEmail", "createdAt"]
+    },
+    "ActivityLog": {
+      "title": "Activity Log",
+      "description": "Historical log entry to audit administration activities",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Audit item ID" },
+        "action": { "type": "string", "description": "Action details string description" },
+        "performedBy": { "type": "string", "description": "Email of user executing the action" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Instant of action execution" }
+      },
+      "required": ["id", "action", "performedBy", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Store stock item references"
+    },
+    "/stock_ins/{stockInId}": {
+      "schema": { "$ref": "#/entities/StockIn" },
+      "description": "Supplier stocking records"
+    },
+    "/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Store sales data logs"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Unread alerts, stock depleted and warning summaries"
+    },
+    "/activity_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Administration logs details"
+    }
+  }
+}

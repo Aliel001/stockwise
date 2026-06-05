@@ -1,0 +1,169 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net - Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE GLOBAL HELPERS ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Auth tokens can verify the identity of standard logged-in users.
+    function isVerifiedUser() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true || 
+        request.auth.token.provider_id == 'google.com' || 
+        request.auth.token.firebase.sign_in_provider == 'google.com'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isNum(val) {
+      return val is int || val is float;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- PRODUCTS COLLECTION RULES ---
+    match /products/{productId} {
+      function isValidProduct(data) {
+        return data.id is string && data.id.size() <= 128
+          && data.name is string && data.name.size() > 0 && data.name.size() <= 150
+          && data.description is string && data.description.size() <= 1000
+          && isNum(data.quantity) && data.quantity >= 0
+          && isNum(data.purchasePrice) && data.purchasePrice >= 0
+          && isNum(data.sellingPrice) && data.sellingPrice >= 0
+          && isNum(data.minStock) && data.minStock >= 0
+          && data.createdBy is string && data.createdBy.size() > 0;
+      }
+
+      allow read: if isVerifiedUser() && resource.data.createdBy == request.auth.token.email;
+      
+      allow create: if isVerifiedUser()
+        && isValidId(productId)
+        && isValidProduct(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().createdBy == request.auth.token.email;
+
+      allow update: if isVerifiedUser()
+        && isValidId(productId)
+        && isValidProduct(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().createdAt == existing().createdAt
+        && incoming().createdBy == existing().createdBy;
+
+      allow delete: if isVerifiedUser() && resource.data.createdBy == request.auth.token.email;
+    }
+
+    // --- STOCK INS (RESTOCKING HISTORY) RULES ---
+    match /stock_ins/{stockInId} {
+      function isValidStockIn(data) {
+        return data.id is string && data.id.size() <= 128
+          && data.productId is string && data.productId.size() <= 128
+          && data.productName is string && data.productName.size() > 0 && data.productName.size() <= 150
+          && isNum(data.quantity) && data.quantity > 0
+          && data.supplier is string && data.supplier.size() <= 150
+          && data.notes is string && data.notes.size() <= 500
+          && data.performedBy is string && data.performedBy.size() > 0;
+      }
+
+      allow read: if isVerifiedUser() && resource.data.performedBy == request.auth.token.email;
+
+      allow create: if isVerifiedUser()
+        && isValidId(stockInId)
+        && isValidStockIn(incoming())
+        && incoming().createdAt == request.time
+        && incoming().performedBy == request.auth.token.email;
+
+      // Restocking logs are immutable, deletion and edits are forbidden
+      allow update, delete: if false;
+    }
+
+    // --- SALES HISTORY RULES ---
+    match /sales/{saleId} {
+      function isValidSale(data) {
+        return data.id is string && data.id.size() <= 128
+          && data.productId is string && data.productId.size() <= 128
+          && data.productName is string && data.productName.size() > 0 && data.productName.size() <= 150
+          && isNum(data.quantity) && data.quantity > 0
+          && isNum(data.unitPrice) && data.unitPrice >= 0
+          && isNum(data.totalPrice) && data.totalPrice >= 0
+          && data.performedBy is string && data.performedBy.size() > 0;
+      }
+
+      allow read: if isVerifiedUser() && resource.data.performedBy == request.auth.token.email;
+
+      allow create: if isVerifiedUser()
+        && isValidId(saleId)
+        && isValidSale(incoming())
+        && incoming().createdAt == request.time
+        && incoming().performedBy == request.auth.token.email;
+
+      // Sales logs are immutable historical records, deletion and edits are forbidden
+      allow update, delete: if false;
+    }
+
+    // --- NOTIFICATIONS SYSTEM RULES ---
+    match /notifications/{notificationId} {
+      function isValidNotification(data) {
+        return data.id is string && data.id.size() <= 128
+          && data.message is string && data.message.size() > 0 && data.message.size() <= 500
+          && data.type is string && (data.type == 'low_stock' || data.type == 'info')
+          && data.isRead is bool
+          && data.userEmail is string && data.userEmail.size() > 0;
+      }
+
+      allow read: if isVerifiedUser() && resource.data.userEmail == request.auth.token.email;
+
+      allow create: if isVerifiedUser()
+        && isValidId(notificationId)
+        && isValidNotification(incoming())
+        && incoming().createdAt == request.time
+        && incoming().userEmail == request.auth.token.email;
+
+      allow update: if isVerifiedUser()
+        && isValidId(notificationId)
+        && isValidNotification(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().userEmail == existing().userEmail;
+
+      allow delete: if isVerifiedUser() && resource.data.userEmail == request.auth.token.email;
+    }
+
+    // --- ACTIVITY LOGS RULES ---
+    match /activity_logs/{logId} {
+      function isValidActivityLog(data) {
+        return data.id is string && data.id.size() <= 128
+          && data.action is string && data.action.size() > 0 && data.action.size() <= 500
+          && data.performedBy is string && data.performedBy.size() > 0;
+      }
+
+      allow read: if isVerifiedUser() && resource.data.performedBy == request.auth.token.email;
+
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidActivityLog(incoming())
+        && incoming().createdAt == request.time
+        && incoming().performedBy == request.auth.token.email;
+
+      // Activity logs represent a high-integrity, completely immutable audit trail
+      allow update, delete: if false;
+    }
+
+  }
+}
