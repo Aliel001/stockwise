@@ -13,12 +13,15 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Auth tokens can verify the identity of standard logged-in users.
     function isVerifiedUser() {
       return isSignedIn() && (
-        request.auth.token.email_verified == true || 
-        request.auth.token.provider_id == 'google.com' || 
-        request.auth.token.firebase.sign_in_provider == 'google.com'
+        request.auth.token.email_verified == true
       );
+    }
+
+    function userEmail() {
+      return request.auth.token.email;
     }
 
     function isValidId(id) {
@@ -50,14 +53,14 @@ service cloud.firestore {
           && data.createdBy is string && data.createdBy.size() > 0;
       }
 
-      allow read: if isVerifiedUser();
+      allow read: if isVerifiedUser() && resource.data.get('createdBy', '') == userEmail();
       
       allow create: if isVerifiedUser()
         && isValidId(productId)
         && isValidProduct(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && incoming().createdBy == request.auth.token.email;
+        && incoming().createdBy == userEmail();
 
       allow update: if isVerifiedUser()
         && isValidId(productId)
@@ -66,7 +69,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().createdBy == existing().createdBy;
 
-      allow delete: if isVerifiedUser();
+      allow delete: if isVerifiedUser() && (resource.data.get('createdBy', '') == userEmail() || resource.data.get('createdBy', '') == '');
     }
 
     // --- STOCK INS (RESTOCKING HISTORY) RULES ---
@@ -81,16 +84,17 @@ service cloud.firestore {
           && data.performedBy is string && data.performedBy.size() > 0;
       }
 
-      allow read: if isVerifiedUser();
+      allow read: if isVerifiedUser() && resource.data.get('performedBy', '') == userEmail();
 
       allow create: if isVerifiedUser()
         && isValidId(stockInId)
         && isValidStockIn(incoming())
         && incoming().createdAt == request.time
-        && incoming().performedBy == request.auth.token.email;
+        && incoming().performedBy == userEmail();
 
-      // Restocking logs are immutable, deletion and edits are forbidden
-      allow update, delete: if false;
+      // Restocking logs allow deletion by the creator during database purge, edits remain forbidden
+      allow update: if false;
+      allow delete: if isVerifiedUser() && (resource.data.get('performedBy', '') == userEmail() || resource.data.get('performedBy', '') == '');
     }
 
     // --- SALES HISTORY RULES ---
@@ -105,16 +109,17 @@ service cloud.firestore {
           && data.performedBy is string && data.performedBy.size() > 0;
       }
 
-      allow read: if isVerifiedUser();
+      allow read: if isVerifiedUser() && resource.data.get('performedBy', '') == userEmail();
 
       allow create: if isVerifiedUser()
         && isValidId(saleId)
         && isValidSale(incoming())
         && incoming().createdAt == request.time
-        && incoming().performedBy == request.auth.token.email;
+        && incoming().performedBy == userEmail();
 
-      // Sales logs are immutable historical records, deletion and edits are forbidden
-      allow update, delete: if false;
+      // Sales logs allow deletion by the creator during database purge, edits remain forbidden
+      allow update: if false;
+      allow delete: if isVerifiedUser() && (resource.data.get('performedBy', '') == userEmail() || resource.data.get('performedBy', '') == '');
     }
 
     // --- NOTIFICATIONS SYSTEM RULES ---
@@ -123,22 +128,25 @@ service cloud.firestore {
         return data.id is string && data.id.size() <= 128
           && data.message is string && data.message.size() > 0 && data.message.size() <= 500
           && data.type is string && (data.type == 'low_stock' || data.type == 'info')
-          && data.isRead is boolean;
+          && data.isRead is bool
+          && data.userEmail is string && data.userEmail.size() > 0;
       }
 
-      allow read: if isVerifiedUser();
+      allow read: if isVerifiedUser() && resource.data.get('userEmail', '') == userEmail();
 
       allow create: if isVerifiedUser()
         && isValidId(notificationId)
         && isValidNotification(incoming())
-        && incoming().createdAt == request.time;
+        && incoming().createdAt == request.time
+        && incoming().userEmail == userEmail();
 
       allow update: if isVerifiedUser()
         && isValidId(notificationId)
         && isValidNotification(incoming())
-        && incoming().createdAt == existing().createdAt;
+        && incoming().createdAt == existing().createdAt
+        && incoming().userEmail == existing().userEmail;
 
-      allow delete: if isVerifiedUser();
+      allow delete: if isVerifiedUser() && (resource.data.get('userEmail', '') == userEmail() || resource.data.get('userEmail', '') == '');
     }
 
     // --- ACTIVITY LOGS RULES ---
@@ -149,16 +157,17 @@ service cloud.firestore {
           && data.performedBy is string && data.performedBy.size() > 0;
       }
 
-      allow read: if isVerifiedUser();
+      allow read: if isVerifiedUser() && resource.data.get('performedBy', '') == userEmail();
 
       allow create: if isVerifiedUser()
         && isValidId(logId)
         && isValidActivityLog(incoming())
         && incoming().createdAt == request.time
-        && incoming().performedBy == request.auth.token.email;
+        && incoming().performedBy == userEmail();
 
-      // Activity logs represent a high-integrity, completely immutable audit trail
-      allow update, delete: if false;
+      // Activity logs representation allows deletion by creator during database purge, edits remain forbidden
+      allow update: if false;
+      allow delete: if isVerifiedUser() && (resource.data.get('performedBy', '') == userEmail() || resource.data.get('performedBy', '') == '');
     }
 
   }

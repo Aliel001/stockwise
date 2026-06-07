@@ -16,6 +16,49 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { safeGetDate, safeGetISOString } from '../utils/date';
 import { clearAllData } from '../services/db';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend
+} from 'recharts';
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: any[];
+  label?: string;
+}
+
+function ChartTooltip({ active, payload, label }: CustomTooltipProps) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-slate-900 border border-slate-800 text-white p-3 rounded-xl shadow-xl font-sans text-xs">
+        <p className="font-bold text-slate-400 mb-1">{label}</p>
+        {payload.map((entry, index) => (
+          <div key={index} className="flex items-center space-x-2 mt-1">
+            <span 
+              className="w-2 h-2 rounded-full inline-block" 
+              style={{ backgroundColor: entry.color || entry.fill || '#6366f1' }} 
+            />
+            <span className="font-medium text-slate-300">
+              {entry.name}:
+            </span>
+            <span className="font-bold text-white">
+              {entry.name === 'Revenue' ? `RWF ${Math.round(entry.value).toLocaleString()}` : entry.value}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return null;
+}
 
 interface DashboardViewProps {
   products: Product[];
@@ -74,36 +117,131 @@ export default function DashboardView({ products, sales, notificationsCount, onN
     };
   }, [products, sales]);
 
-  // Aggregate sales by date (last 7 days) for the custom SVG chart
-  const weeklyChartData = useMemo(() => {
-    const data: { [key: string]: number } = {};
+  const [timeframe, setTimeframe] = useState<'7days' | '30days' | '12months' | 'yearly'>('7days');
+
+  // 1. Weekly Data (Last 7 Days)
+  const sevenDaysData = useMemo(() => {
+    const data: { [key: string]: { dateStr: string; label: string; amount: number; quantity: number } } = {};
     const now = new Date();
     
-    // Initialize last 7 days
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(now.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      data[dateStr] = 0;
+      const dateKey = d.toISOString().split('T')[0];
+      const formattedDate = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+      data[dateKey] = {
+        dateStr: dateKey,
+        label: formattedDate,
+        amount: 0,
+        quantity: 0
+      };
     }
 
-    // Populate data
     sales.forEach(sale => {
       if (!sale.createdAt) return;
-      const dateStr = safeGetISOString(sale.createdAt).split('T')[0];
-      if (data[dateStr] !== undefined) {
-        data[dateStr] += sale.totalPrice;
+      const dateKey = safeGetISOString(sale.createdAt).split('T')[0];
+      if (data[dateKey] !== undefined) {
+        data[dateKey].amount += sale.totalPrice;
+        data[dateKey].quantity += sale.quantity;
       }
     });
 
-    // Formatting as array
-    return Object.entries(data).map(([date, val]) => {
-      const formattedDate = safeGetDate(date).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
-      return { date: formattedDate, amount: val };
-    });
+    return Object.values(data);
   }, [sales]);
 
-  const maxWeeklyAmount = Math.max(...weeklyChartData.map(d => d.amount), 1);
+  // 2. Monthly Data (Last 30 Days)
+  const monthlyData = useMemo(() => {
+    const data: { [key: string]: { dateStr: string; label: string; amount: number; quantity: number } } = {};
+    const now = new Date();
+    
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const dateKey = d.toISOString().split('T')[0];
+      const formattedDate = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      data[dateKey] = {
+        dateStr: dateKey,
+        label: formattedDate,
+        amount: 0,
+        quantity: 0
+      };
+    }
+
+    sales.forEach(sale => {
+      if (!sale.createdAt) return;
+      const dateKey = safeGetISOString(sale.createdAt).split('T')[0];
+      if (data[dateKey] !== undefined) {
+        data[dateKey].amount += sale.totalPrice;
+        data[dateKey].quantity += sale.quantity;
+      }
+    });
+
+    return Object.values(data);
+  }, [sales]);
+
+  // 3. Rolling 12 Months and Yearly Performance
+  const yearsData = useMemo(() => {
+    const rollingMonthly: { [key: string]: { monthKey: string; label: string; amount: number; quantity: number } } = {};
+    const yearTotals: { [key: string]: { label: string; amount: number; quantity: number } } = {};
+    const now = new Date();
+    
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const label = d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
+      rollingMonthly[monthKey] = {
+        monthKey,
+        label,
+        amount: 0,
+        quantity: 0
+      };
+    }
+
+    sales.forEach(sale => {
+      if (!sale.createdAt) return;
+      const saleDate = safeGetDate(sale.createdAt);
+      const saleYear = String(saleDate.getFullYear());
+      const monthKey = `${saleDate.getFullYear()}-${String(saleDate.getMonth() + 1).padStart(2, '0')}`;
+
+      if (rollingMonthly[monthKey] !== undefined) {
+        rollingMonthly[monthKey].amount += sale.totalPrice;
+        rollingMonthly[monthKey].quantity += sale.quantity;
+      }
+
+      if (!yearTotals[saleYear]) {
+        yearTotals[saleYear] = {
+          label: saleYear,
+          amount: 0,
+          quantity: 0
+        };
+      }
+      yearTotals[saleYear].amount += sale.totalPrice;
+      yearTotals[saleYear].quantity += sale.quantity;
+    });
+
+    const rollingMonths = Object.values(rollingMonthly);
+    const yearly = Object.values(yearTotals).sort((a, b) => a.label.localeCompare(b.label));
+
+    return {
+      rollingMonths,
+      yearly: yearly.length > 0 ? yearly : [{ label: String(now.getFullYear()), amount: 0, quantity: 0 }]
+    };
+  }, [sales]);
+
+  const chartData = useMemo(() => {
+    switch (timeframe) {
+      case '7days':
+        return sevenDaysData;
+      case '30days':
+        return monthlyData;
+      case '12months':
+        return yearsData.rollingMonths;
+      case 'yearly':
+        return yearsData.yearly;
+      default:
+        return sevenDaysData;
+    }
+  }, [timeframe, sevenDaysData, monthlyData, yearsData]);
 
   const handlePurgeAllData = async () => {
     if (purgeInput !== 'PURGE') return;
@@ -219,45 +357,142 @@ export default function DashboardView({ products, sales, notificationsCount, onN
       {/* Graphical Section & Summary columns */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* SVG Week Sales Chart */}
-        <div className="lg:col-span-2 bg-white rounded-xl p-6 border border-slate-100 shadow-sm">
-          <div className="flex items-center justify-between mb-6">
+        {/* Recharts Analytics Trend Chart */}
+        <div className="lg:col-span-2 bg-white rounded-xl p-6 border border-slate-100 shadow-sm flex flex-col justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <div>
-              <h3 className="text-sm font-bold text-slate-800">Weekly Performance</h3>
-              <p className="text-[10px] text-slate-400 mt-0.5">Summary of total checkout prices over the past 7 days</p>
+              <h3 className="text-sm font-bold text-slate-800">Sales Analytics Performance</h3>
+              <p className="text-[10px] text-slate-400 mt-0.5 animate-pulse">
+                {timeframe === '7days' && 'Detailed checkout transactions over the last 7 days'}
+                {timeframe === '30days' && 'Daily revenue trends and units sold across the last 30 days'}
+                {timeframe === '12months' && 'Seasonal monthly demand patterns over rolling last 12 months'}
+                {timeframe === 'yearly' && 'Annual historical performance and business growth summaries'}
+              </p>
             </div>
-            <div className="text-xs text-slate-500 font-semibold bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100 flex items-center space-x-1.5">
-              <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" />
-              <span>Checkout Total (RWF)</span>
+            
+            {/* Timeframe Switcher */}
+            <div className="flex flex-wrap gap-1 p-1 bg-slate-50 border border-slate-100 rounded-xl self-start sm:self-auto">
+              {(['7days', '30days', '12months', 'yearly'] as const).map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => setTimeframe(opt)}
+                  className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                    timeframe === opt
+                      ? 'bg-indigo-600 text-white shadow-xs animate-none'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {opt === '7days' && '7 Days'}
+                  {opt === '30days' && '30 Days'}
+                  {opt === '12months' && '12 Months'}
+                  {opt === 'yearly' && 'Yearly'}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* SVG representation of columns */}
-          <div className="h-64 flex items-end justify-between gap-2.5 pt-4 border-b border-slate-100">
-            {weeklyChartData.map((day, i) => {
-              const heightPct = (day.amount / maxWeeklyAmount) * 85 + 5; // scaled 5% to 90%
-              return (
-                <div key={i} className="flex-1 flex flex-col items-center group h-full justify-end relative">
-                  {/* Tooltip on hover */}
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900 text-white text-[10px] px-2 py-1 rounded-sm mb-1.5 font-mono shadow-md whitespace-nowrap absolute z-10 bottom-full">
-                    RWF {Math.round(day.amount).toLocaleString()}
-                  </div>
-                  
-                  {/* Column */}
-                  <div 
-                    style={{ height: `${heightPct}%` }}
-                    className="w-full bg-indigo-500 rounded-t-md hover:bg-slate-850 transition-colors relative cursor-pointer group-hover:shadow-[0_0_12px_rgba(99,102,241,0.2)]"
-                  >
-                    <div className="absolute top-1 left-0 right-0 h-0.5 bg-indigo-300 opacity-30 rounded-full" />
-                  </div>
-                  
-                  {/* Label */}
-                  <span className="text-[9px] text-slate-400 mt-2 font-semibold text-center select-none pt-1">
-                    {day.date}
-                  </span>
-                </div>
-              );
-            })}
+          {/* Recharts Render Container */}
+          <div className="w-full h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              {timeframe === 'yearly' ? (
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorAmountBar" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8}/>
+                      <stop offset="95%" stopColor="#4f46e5" stopOpacity={0.15}/>
+                    </linearGradient>
+                    <linearGradient id="colorQtyBar" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.8}/>
+                      <stop offset="95%" stopColor="#059669" stopOpacity={0.15}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="label" 
+                    stroke="#94a3b8" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false} 
+                    fontFamily="Inter, sans-serif"
+                  />
+                  <YAxis 
+                    stroke="#94a3b8" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false}
+                    fontFamily="JetBrains Mono, monospace"
+                    tickFormatter={(value) => `RWF ${Math.round(value).toLocaleString()}`} 
+                  />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend 
+                    verticalAlign="top" 
+                    height={36} 
+                    iconType="circle" 
+                    iconSize={8}
+                    wrapperStyle={{ fontSize: '10px', fontWeight: 600, color: '#64748b', fontFamily: 'Inter, sans-serif' }}
+                  />
+                  <Bar name="Revenue" dataKey="amount" fill="url(#colorAmountBar)" radius={[4, 4, 0, 0]} barSize={40} />
+                  <Bar name="Units Sold" dataKey="quantity" fill="url(#colorQtyBar)" radius={[4, 4, 0, 0]} barSize={40} />
+                </BarChart>
+              ) : (
+                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorAmount" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.25}/>
+                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0}/>
+                    </linearGradient>
+                    <linearGradient id="colorQty" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.25}/>
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="label" 
+                    stroke="#94a3b8" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false} 
+                    minTickGap={timeframe === '30days' ? 25 : 5}
+                    fontFamily="Inter, sans-serif"
+                  />
+                  <YAxis 
+                    stroke="#94a3b8" 
+                    fontSize={10} 
+                    tickLine={false} 
+                    axisLine={false}
+                    fontFamily="JetBrains Mono, monospace"
+                    tickFormatter={(value) => `RWF ${(value >= 1000000) ? (value / 1000000).toFixed(1) + 'M' : (value / 1000).toFixed(0) + 'K'}`}
+                  />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend 
+                    verticalAlign="top" 
+                    height={36} 
+                    iconType="circle" 
+                    iconSize={8}
+                    wrapperStyle={{ fontSize: '10px', fontWeight: 600, color: '#64748b', fontFamily: 'Inter, sans-serif' }}
+                  />
+                  <Area 
+                    type="monotone" 
+                    name="Revenue" 
+                    dataKey="amount" 
+                    stroke="#6366f1" 
+                    strokeWidth={2} 
+                    fillOpacity={1} 
+                    fill="url(#colorAmount)" 
+                  />
+                  <Area 
+                    type="monotone" 
+                    name="Units Sold" 
+                    dataKey="quantity" 
+                    stroke="#10b981" 
+                    strokeWidth={2} 
+                    fillOpacity={1} 
+                    fill="url(#colorQty)" 
+                  />
+                </AreaChart>
+              )}
+            </ResponsiveContainer>
           </div>
         </div>
 
