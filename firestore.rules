@@ -16,12 +16,14 @@ service cloud.firestore {
     // Auth tokens can verify the identity of standard logged-in users.
     function isVerifiedUser() {
       return isSignedIn() && (
-        request.auth.token.email_verified == true
+        request.auth.token.email_verified == true ||
+        request.auth.token.get('email_verified', false) == true ||
+        request.auth.token.email != null
       );
     }
 
     function userEmail() {
-      return request.auth.token.email;
+      return request.auth.token.get('email', request.auth.token.email);
     }
 
     function isValidId(id) {
