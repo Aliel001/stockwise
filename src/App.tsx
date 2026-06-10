@@ -34,20 +34,19 @@ export default function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
-  // 1. Validate Connection to Firestore on initial application boot as mandated
+  // 1. Validate Connection to Backend on initial application boot
   useEffect(() => {
     async function testConnection() {
       try {
-        await getDocFromServer(doc(db, 'system_configs', 'connection'));
-        setNetworkHealthy(true);
-      } catch (error: any) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration or internet status.");
-          setNetworkHealthy(false);
-        } else {
-          // Normal responses (e.g., empty or document doesn't exist) imply we contacted the server successfully!
+        const res = await fetch('/api/health');
+        if (res.ok) {
           setNetworkHealthy(true);
+        } else {
+          setNetworkHealthy(false);
         }
+      } catch (error: any) {
+        console.error("Please check your PostgreSQL backend running status.", error);
+        setNetworkHealthy(false);
       }
     }
     testConnection();
