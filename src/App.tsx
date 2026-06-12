@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDocFromServer } from 'firebase/firestore';
-import { db, auth } from './firebase';
+import { auth, onAuthStateChanged, LocalUser as User } from './firebase';
 import { Page, Product, Sale, StockIn, Notification, ActivityLog } from './types';
 import { 
   subscribeProducts,
