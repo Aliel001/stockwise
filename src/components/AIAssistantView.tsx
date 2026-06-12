@@ -81,11 +81,30 @@ export default function AIAssistantView() {
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Failed to query assistant');
+        let errMsg = 'Failed to query assistant';
+        try {
+          const contentType = response.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const errData = await response.json();
+            errMsg = errData.error || errMsg;
+          } else {
+            const tempText = await response.text();
+            errMsg = `${errMsg} (Status ${response.status}: ${tempText.slice(0, 100).trim()})`;
+          }
+        } catch {
+          errMsg = `${errMsg} (Status code: ${response.status})`;
+        }
+        throw new Error(errMsg);
       }
 
-      const data = await response.json();
+      let data;
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const tempText = await response.text();
+        throw new Error(`Expected JSON but received content-type "${contentType}" with body: ${tempText.slice(0, 75)}...`);
+      }
 
       const assistantMsg: Message = {
         id: 'msg-' + Math.random().toString(36).substring(2, 11),

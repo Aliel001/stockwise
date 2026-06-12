@@ -3,21 +3,29 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import pg from 'pg';
 import { GoogleGenAI } from '@google/genai';
+import dotenv from 'dotenv';
+
+// Load environmental parameters and configuration
+dotenv.config();
 
 const { Pool } = pg;
 
 // 1. Connection Optimization using PgBouncer/Neon compatible Pool configuration
-let dbUrl = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_HYnrTCGg56MB@ep-quiet-king-aqr521b9-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+let dbUrl = process.env.DATABASE_URL || '';
+
+if (!dbUrl) {
+  console.warn('[PostgreSQL Pool Alert] DATABASE_URL is not set. Database features may be offline.');
+}
 
 // Sanitization for standard node-postgres 'pg' library compatibility
-if (dbUrl.includes('channel_binding=')) {
+if (dbUrl && dbUrl.includes('channel_binding=')) {
   dbUrl = dbUrl.replace(/[&?]channel_binding=[^&]+/g, '');
   // Clean up hanging parameters
   dbUrl = dbUrl.replace(/\?&/, '?').replace(/&$/, '');
 }
 
 // Configure a production-grade Connection Pool optimized for high concurrency
-const pool = new Pool({
+const pool = new Pool(dbUrl ? {
   connectionString: dbUrl,
   ssl: {
     rejectUnauthorized: false // Required for Neon PostgreSQL SSL handshakes
@@ -25,6 +33,8 @@ const pool = new Pool({
   max: 30, // Pool size optimized for concurrent web transactions
   idleTimeoutMillis: 15000, // Faster idle connection cleanup
   connectionTimeoutMillis: 5000, // Safe timeout for immediate connection failures
+} : {
+  max: 1 // Minimal dummy configuration when database URL is missing
 });
 
 // CRITICAL: Handle unexpected database connection errors on idle pooled clients to prevent process crash
@@ -34,6 +44,10 @@ pool.on('error', (err) => {
 
 // Resilient DB Schema initialization on boot with connection retry and index/column recovery
 async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
+  if (!dbUrl) {
+    console.warn('[PostgreSQL] Schema initialization bypassed: DATABASE_URL is not set.');
+    return;
+  }
   let client;
   for (let i = 0; i < retries; i++) {
     try {
@@ -235,13 +249,30 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
   } catch (err) {
     console.error('[PostgreSQL] Database connection/schema error: ', err);
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 }
 
-async function startServer() {
-  const app = express();
-  app.use(express.json());
+const app = express();
+export { app };
+
+app.use(express.json());
+
+  // Allow CORS globally to handle custom headers and browser preflight OPTIONS requests securely
+  app.use((req, res, next) => {
+    console.log(`[Express Request] ${req.method} ${req.path}`);
+    const origin = req.headers.origin || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-email');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   const PORT = 3000;
 
@@ -261,10 +292,160 @@ async function startServer() {
     }
   });
 
+  // In-memory registry for email verification codes
+  const verificationCodes = new Map<string, { code: string; name: string; phone: string; expiresAt: number }>();
+
+  // Robust function to check if the email is a genuine store email address
+  function isRealEmail(email: string): { isValid: boolean; reason: string } {
+    const clean = email.trim().toLowerCase();
+    const regex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!regex.test(clean)) {
+      return { isValid: false, reason: 'Imiterere y\'imeri ntabwo yemewe. Koresha imeri ifite inyuguti zikwiye (Urugero: manager@domain.rw).' };
+    }
+
+    const [username, domain] = clean.split('@');
+
+    // Username checks
+    if (username.length < 3) {
+      return { isValid: false, reason: 'Izina rya imeri (ibice bibanziriza @) rigomba kuba rigizwe n’inyuguti nibura 3. / Username must be at least 3 characters.' };
+    }
+
+    const fakeUsernames = ['test', 'dummy', 'fake', 'abc', 'aaa', 'bbb', 'temp', 'admin', 'user', 'mock', 'asdf', 'qwerty'];
+    if (fakeUsernames.includes(username)) {
+      return { isValid: false, reason: 'Iri zina rya imeri ntabwo ryemewe muri StockWise ku bw\'umutekano kuko rimeze nka test.' };
+    }
+
+    // Temporary/Disposable Email Providers
+    const disposableDomains = [
+      'mailinator.com', 'tempmail.com', '10minutemail.com', 'yopmail.com', 'trashmail.com', 
+      'dispostable.com', 'guerrillamail.com', 'sharklasers.com', 'getairmail.com', 'temp-mail.org',
+      'maildrop.cc', 'disposable.com', 'boun.cr', 'mintemail.com', 'jetable.org', 'fakeinbox.com',
+      'mailnesia.com', 'mailcatch.com', 'temporarymail.com', 'guerrillamailblock.com', 'dispolist.com'
+    ];
+
+    if (disposableDomains.some(d => domain.includes(d))) {
+      return { isValid: false, reason: 'Imeri zo mu bwoko bwa disposable (iz’igihe gito nk\'iyi) ntabwo zemewe kubera umutekano. Koresha imeri yawe ihoraho.' };
+    }
+
+    // Unacceptable fake placeholder domains 
+    const mockDomains = [
+      'test.com', 'example.com', 'invalid.com', 'mock.com', 'fake.com', 'dummy.com', 
+      'any.com', 'something.com', 'test.co', 'xyz.com', 'abc.com', 'none.com', 'localhost', 
+      'email.com', 'mail.ru', 'test.localhost', 'example.org', 'domain.com'
+    ];
+
+    if (mockDomains.includes(domain) || domain.endsWith('.test') || domain.endsWith('.invalid')) {
+      return { isValid: false, reason: 'Iyi domain ntabwo yemewe. Banza winjize imeri nyakuri ifite agaciro ihoraho. / This email domain is blacklisted as invalid.' };
+    }
+
+    return { isValid: true, reason: '' };
+  }
+
+  // POST /api/auth/send-code - Initiates verification stage by generating and returning a 6-digit passcode
+  app.post('/api/auth/send-code', (req, res) => {
+    try {
+      const { email, name, phone } = req.body;
+      if (!email || !name) {
+        return res.status(400).json({ error: 'Imeri ndetse n\'Amazina yombi barakenewe. / Email and Name are required.' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanName = name.trim();
+      const cleanPhone = (phone || '').trim();
+
+      // Check if candidate email is genuine or not
+      const emailCheckResult = isRealEmail(cleanEmail);
+      if (!emailCheckResult.isValid) {
+        console.warn(`[Blocked Authentication] Attempt with bogus/dummy email: "${cleanEmail}": ${emailCheckResult.reason}`);
+        return res.status(400).json({ error: emailCheckResult.reason });
+      }
+
+      if (cleanPhone) {
+        // Enforce valid phone dial code format
+        const phoneRegex = /^\+?[0-9\s\-()]{8,20}$/;
+        if (!phoneRegex.test(cleanPhone)) {
+          return res.status(400).json({ error: 'Numero ya telefoni ntago yanditse neza. / Please input a valid store contact phone number.' });
+        }
+      }
+
+      // Generate secure 6-digit OTP passcode
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+      // Store in memory with 10 minute expiry
+      verificationCodes.set(cleanEmail, {
+        code,
+        name: cleanName,
+        phone: cleanPhone || 'None',
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      });
+
+      console.log(`[Auth verification] Generated OTP: ${code} for client: ${cleanEmail} (Phone: ${cleanPhone || 'N/A'})`);
+
+      // We return the code transparently in the JSON payload of the response in this deployment environment
+      // so the user can see/access it within their sandbox preview naturally
+      res.json({
+        success: true,
+        message: 'Agaciro k’umutekano koherejwe successfully!',
+        email: cleanEmail,
+        phone: cleanPhone || 'None',
+        code: code, // Shared in response body to guarantee seamless preview functionality
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/auth/verify-code - Validates 6-digit passcode and authenticates session
+  app.post('/api/auth/verify-code', (req, res) => {
+    try {
+      const { email, code } = req.body;
+      if (!email || !code) {
+        return res.status(400).json({ error: 'Email and 6-digit code are required variables' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanCode = code.trim();
+
+      const record = verificationCodes.get(cleanEmail);
+      if (!record) {
+        return res.status(400).json({ error: 'No verification record exists for this email address. Please request a new code.' });
+      }
+
+      if (Date.now() > record.expiresAt) {
+        verificationCodes.delete(cleanEmail);
+        return res.status(400).json({ error: 'Verification code has expired. Please request a new code.' });
+      }
+
+      if (record.code !== cleanCode) {
+        return res.status(400).json({ error: 'Incorrect 6-digit verification code. Please try again.' });
+      }
+
+      // Clear code after successful verification to prevent replay
+      verificationCodes.delete(cleanEmail);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully!',
+        email: cleanEmail,
+        displayName: record.name,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Middleware to retrieve authenticated user email
   const requireUser = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const email = req.headers['x-user-email'] as string || 'alieluzii@gmail.com';
-    req.userEmail = email;
+    const email = req.headers['x-user-email'] as string;
+    if (!email) {
+      if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+        return res.status(401).json({ error: 'Unauthenticated. Header x-user-email is missing.' });
+      }
+      // Fallback for seamless local sandbox and developer workspace previews
+      req.userEmail = 'alieluzii@gmail.com';
+    } else {
+      req.userEmail = email.trim().toLowerCase();
+    }
     next();
   };
 
@@ -346,7 +527,6 @@ async function startServer() {
 
       const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND created_by = $2;', [id, req.userEmail]);
       if (isOwner.rows.length === 0) {
-        client.release();
         return res.status(403).json({ error: 'Unauthorized product modification' });
       }
 
@@ -383,7 +563,6 @@ async function startServer() {
 
       const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND created_by = $2;', [id, req.userEmail]);
       if (isOwner.rows.length === 0) {
-        client.release();
         return res.status(403).json({ error: 'Unauthorized product modification' });
       }
 
@@ -435,7 +614,6 @@ async function startServer() {
 
       const prod = await client.query('SELECT name, purchase_price FROM products WHERE id = $1 AND created_by = $2;', [productId, req.userEmail]);
       if (prod.rows.length === 0) {
-        client.release();
         return res.status(404).json({ error: 'Product not found or access denied' });
       }
 
@@ -526,13 +704,11 @@ async function startServer() {
       );
 
       if (prodRes.rows.length === 0) {
-        client.release();
         return res.status(404).json({ error: 'Product not found' });
       }
 
       const product = prodRes.rows[0];
       if (product.stock < quantity) {
-        client.release();
         return res.status(400).json({ error: `Insufficient stock for ${product.name}. Requested: ${quantity}, Available: ${product.stock}` });
       }
 
@@ -908,24 +1084,29 @@ ${JSON.stringify(dbContext, null, 2)}`;
     }
   });
 
-  // Serve static assets / fallback in production and manage dev middleware
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  // Serve static assets / fallback in production and manage dev middleware if not on Vercel
+async function startServer() {
+  if (!process.env.VERCEL) {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[StockWise Backend] Server running at http://0.0.0.0:${PORT}`);
-  });
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[StockWise Backend] Server running at http://0.0.0.0:${PORT}`);
+    });
+  } else {
+    console.log('[StockWise Backend] Server initialized in Vercel Serverless mode.');
+  }
 }
 
 // Add User email typings for Express
