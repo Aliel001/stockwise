@@ -2,11 +2,19 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import pg from 'pg';
+import { GoogleGenAI } from '@google/genai';
 
 const { Pool } = pg;
 
 // 1. Connection Optimization using PgBouncer/Neon compatible Pool configuration
-const dbUrl = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_HYnrTCGg56MB@ep-quiet-king-aqr521b9-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+let dbUrl = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_HYnrTCGg56MB@ep-quiet-king-aqr521b9-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+
+// Sanitization for standard node-postgres 'pg' library compatibility
+if (dbUrl.includes('channel_binding=')) {
+  dbUrl = dbUrl.replace(/[&?]channel_binding=[^&]+/g, '');
+  // Clean up hanging parameters
+  dbUrl = dbUrl.replace(/\?&/, '?').replace(/&$/, '');
+}
 
 // Configure a production-grade Connection Pool optimized for high concurrency
 const pool = new Pool({
@@ -16,7 +24,12 @@ const pool = new Pool({
   },
   max: 30, // Pool size optimized for concurrent web transactions
   idleTimeoutMillis: 15000, // Faster idle connection cleanup
-  connectionTimeoutMillis: 4000, // Safe timeout for immediate connection failures
+  connectionTimeoutMillis: 5000, // Safe timeout for immediate connection failures
+});
+
+// CRITICAL: Handle unexpected database connection errors on idle pooled clients to prevent process crash
+pool.on('error', (err) => {
+  console.error('[PostgreSQL Connection Pool] Unexpected error on idle client:', err);
 });
 
 // Resilient DB Schema initialization on boot with connection retry and index/column recovery
@@ -137,6 +150,7 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
         product_id VARCHAR(255) REFERENCES products(id) ON DELETE CASCADE,
         product_name VARCHAR(255),
         quantity INTEGER NOT NULL CHECK (quantity > 0),
+        purchase_price NUMERIC(15, 2) DEFAULT 0.00,
         supplier VARCHAR(255),
         notes TEXT,
         performed_by VARCHAR(255) NOT NULL,
@@ -186,6 +200,9 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     await client.query('CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_stock_ins_created_at ON stock_ins(created_at);');
 
+    // Ensure stock_ins has purchase_price column (for "even stockin add purchase price" request)
+    await client.query('ALTER TABLE stock_ins ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(15, 2) DEFAULT 0.00;');
+
     // Seeding some starter products if the catalog is empty, supporting neat visual UX
     const resCount = await client.query('SELECT COUNT(*) FROM products;');
     if (parseInt(resCount.rows[0].count) === 0) {
@@ -228,8 +245,21 @@ async function startServer() {
 
   const PORT = 3000;
 
-  // Run the tables verification on startup
-  await initializeSchema();
+  // Run the tables verification on startup in the background to ensure Express starts immediately and is fully responsive
+  initializeSchema().catch((err) => {
+    console.error('[PostgreSQL] Background schema initialization failed:', err);
+  });
+
+  // FAST API Healthcheck endpoint
+  app.get('/api/health', async (req, res) => {
+    try {
+      await pool.query('SELECT 1;');
+      res.json({ status: 'ok', database: 'connected' });
+    } catch (err: any) {
+      console.warn('[PostgreSQL Health Warning]:', err.message);
+      res.status(200).json({ status: 'warn', database: 'connecting_or_idle', error: err.message });
+    }
+  });
 
   // Middleware to retrieve authenticated user email
   const requireUser = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -382,6 +412,7 @@ async function startServer() {
       const q = `
         SELECT s.id, s.product_id as "productId", s.product_name as "productName",
                s.quantity::int, s.supplier, s.notes, s.performed_by as "performedBy",
+               s.purchase_price::float as "purchasePrice",
                s.created_at as "createdAt"
         FROM stock_ins s
         WHERE s.performed_by = $1
@@ -397,12 +428,12 @@ async function startServer() {
 
   // POST /api/stock-ins
   app.post('/api/stock-ins', requireUser, async (req, res) => {
-    const { productId, quantity, supplier, notes } = req.body;
+    const { productId, quantity, supplier, notes, purchasePrice } = req.body;
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      const prod = await client.query('SELECT name FROM products WHERE id = $1 AND created_by = $2;', [productId, req.userEmail]);
+      const prod = await client.query('SELECT name, purchase_price FROM products WHERE id = $1 AND created_by = $2;', [productId, req.userEmail]);
       if (prod.rows.length === 0) {
         client.release();
         return res.status(404).json({ error: 'Product not found or access denied' });
@@ -410,6 +441,7 @@ async function startServer() {
 
       const stockInId = 'stk_' + Math.random().toString(36).substring(2, 11);
       const prodName = prod.rows[0].name;
+      const currentProductPurchasePrice = prod.rows[0].purchase_price;
 
       // Update Stock count (Durable inventory stock)
       await client.query(
@@ -419,18 +451,29 @@ async function startServer() {
         [quantity, productId]
       );
 
+      // Determine active purchase price. Use supplied purchasePrice, falling back to product's current one
+      const activePurchasePrice = purchasePrice !== undefined && purchasePrice !== null ? parseFloat(purchasePrice) : parseFloat(currentProductPurchasePrice || 0);
+
+      // Also update the main product's purchase_price to keep catalogs in sync
+      await client.query(
+        `UPDATE products 
+         SET purchase_price = $1, updated_at = NOW()
+         WHERE id = $2 AND created_by = $3;`,
+        [activePurchasePrice, productId, req.userEmail]
+      );
+
       // Record Stock In Transaction
       await client.query(
-        `INSERT INTO stock_ins (id, product_id, product_name, quantity, supplier, notes, performed_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7);`,
-        [stockInId, productId, prodName, quantity, supplier || '', notes || '', req.userEmail]
+        `INSERT INTO stock_ins (id, product_id, product_name, quantity, supplier, notes, purchase_price, performed_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+        [stockInId, productId, prodName, quantity, supplier || '', notes || '', activePurchasePrice, req.userEmail]
       );
 
       // Record in logs
       await client.query(
         `INSERT INTO activity_logs (id, action, performed_by)
          VALUES ($1, $2, $3);`,
-        ['log_' + Math.random().toString(36).substring(2, 11), `Restocked ${quantity} units of "${prodName}"`, req.userEmail]
+        ['log_' + Math.random().toString(36).substring(2, 11), `Restocked ${quantity} units of "${prodName}" (Purchase Price: ${activePurchasePrice} RWF)`, req.userEmail]
       );
 
       await client.query('COMMIT');
@@ -637,6 +680,231 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     } finally {
       client.release();
+    }
+  });
+
+  // --- StockWise AI Assistant API Route & Service Layer ---
+  let aiClient: GoogleGenAI | null = null;
+  function getGeminiClient(): GoogleGenAI {
+    if (!aiClient) {
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) {
+        throw new Error('GEMINI_API_KEY key is missing. Please configuration is required in Settings panel.');
+      }
+      aiClient = new GoogleGenAI({
+        apiKey: key,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build'
+          }
+        }
+      });
+    }
+    return aiClient;
+  }
+
+  app.post('/api/ai/chat', requireUser, async (req, res) => {
+    const { message, history } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'Message field is required' });
+    }
+
+    try {
+      const email = req.userEmail;
+
+      // 1. Fetch products & stock
+      const productsQuery = `
+        SELECT p.id, p.name, p.product_code as "productCode", p.description,
+               p.purchase_price::float as "purchasePrice",
+               p.selling_price::float as "sellingPrice",
+               p.min_stock::int as "minStock",
+               COALESCE(s.quantity, 0)::int as quantity
+        FROM products p
+        LEFT JOIN inventory_stock s ON p.id = s.product_id
+        WHERE p.created_by = $1
+        ORDER BY p.name ASC;
+      `;
+      const productsRes = await pool.query(productsQuery, [email]);
+
+      // 2. Fetch sales
+      const salesQuery = `
+        SELECT s.id, si.product_id as "productId", p.name as "productName",
+               si.quantity::int as quantity, si.price::float as price,
+               p.purchase_price::float as "purchasePrice",
+               s.created_at as "createdAt"
+        FROM sales s
+        JOIN sales_items si ON s.id = si.sale_id
+        JOIN products p ON si.product_id = p.id
+        WHERE s.performed_by = $1
+        ORDER BY s.created_at DESC;
+      `;
+      const salesRes = await pool.query(salesQuery, [email]);
+
+      // 3. Fetch stock-ins
+      const stockInsQuery = `
+        SELECT id, product_id as "productId", product_name as "productName",
+               quantity::int as quantity, supplier, notes, purchase_price::float as "purchasePrice", created_at as "createdAt"
+        FROM stock_ins
+        WHERE performed_by = $1
+        ORDER BY created_at DESC;
+      `;
+      const stockInsRes = await pool.query(stockInsQuery, [email]);
+
+      // 4. Fetch notifications
+      const notificationsQuery = `
+        SELECT id, message, type, is_read as "isRead", created_at as "createdAt"
+        FROM notifications
+        WHERE user_email = $1
+        ORDER BY created_at DESC;
+      `;
+      const notificationsRes = await pool.query(notificationsQuery, [email]);
+
+      // 5. Fetch activity logs
+      const logsQuery = `
+        SELECT action, created_at as "createdAt"
+        FROM activity_logs
+        WHERE performed_by = $1
+        ORDER BY created_at DESC
+        LIMIT 25;
+      `;
+      const logsRes = await pool.query(logsQuery, [email]);
+
+      // Structure data compact
+      const dbContext = {
+        products: productsRes.rows.map(p => ({
+          name: p.name,
+          code: p.productCode,
+          purchasePrice: p.purchasePrice,
+          sellingPrice: p.sellingPrice,
+          minStock: p.minStock,
+          currentQuantity: p.quantity,
+          isLowStock: p.quantity <= p.minStock
+        })),
+        sales: salesRes.rows.map(s => ({
+          saleId: s.id,
+          createdAt: s.createdAt,
+          item: {
+            name: s.productName,
+            quantity: s.quantity,
+            price: s.price,
+            purchasePrice: s.purchasePrice,
+            profit: s.quantity * (s.price - s.purchasePrice)
+          }
+        })),
+        stockIns: stockInsRes.rows.map(si => ({
+          productName: si.productName,
+          quantity: si.quantity,
+          purchasePrice: si.purchasePrice || 0,
+          supplier: si.supplier || 'Nta we wanditse',
+          notes: si.notes || '',
+          createdAt: si.createdAt
+        })),
+        notifications: notificationsRes.rows.map(n => ({
+          message: n.message,
+          type: n.type,
+          isRead: n.isRead,
+          createdAt: n.createdAt
+        })),
+        activityLogs: logsRes.rows.map(l => ({
+          action: l.action,
+          createdAt: l.createdAt
+        }))
+      };
+
+      const currentTime = new Date().toISOString();
+      const ai = getGeminiClient();
+
+      // System instructions prompt
+      const systemInstruction = `You are StockWise AI Assistant. You are a fast, precise business assistant for shop owners.
+
+CRITICAL RULES FOR RESPONSE STYLE:
+1. PRIMARY LANGUAGE: Always respond in Kinyarwanda using simple, direct business language, unless the user explicitly requests otherwise. You must understand questions in both Kinyarwanda and English.
+2. RESPONSE LENGTH: Keep answers EXTREMELY CONCISE. The default response length must be 1 to 3 short sentences. Avoid long paragraphs and avoid unnecessary explanations or conversational fluff.
+3. PRODUCT LISTS: When listing products, quantities, or recommendations, ALWAYS use bullet points (•) and format them exactly like this:
+   • Isukari - 5 Kg
+   • Umuceri - 3 Kg
+4. BUSINESS QUESTIONS STYLE EXAMPLES:
+   - Question: "Isukari isigaye ingahe?" -> Answer: "Isukari isigaye 15 Kg."
+   - Question: "Ninjije angahe uyu munsi?" -> Answer: "Uyu munsi winjije 125,000 RWF."
+   - Question: "Ni ibihe bicuruzwa biri hafi gushira?" -> Answer:
+     • Isukari - 5 Kg
+     • Umuceri - 3 Kg
+   - Question: "Ni iki ngomba kurangura?" -> Answer: "Rangura:
+     • Isukari
+     • Umuceri"
+5. NO UNSOLICITED REPORTS: Avoid long business reports or deep detail unless the user explicitly uses words like "Sobanura birambuye", "Mpa details", "Analyze", or "Report". Otherwise, remain extremely concise.
+6. DATA SENSITIVITY: Use only the business data provided from the database below. Never invent numbers, stock quantities, sales, profit, or reports. If information is unavailable, clearly state that it is not available in the database.
+7. SELF-CORRECTION PRINCIPLE: Before speaking, ask yourself: "Can this answer be shorter while still being useful?" If yes, shorten it. Keep responses practical, direct, and easy for shop owners to read quickly.
+
+Current Server Time (for calculating "today", "this week", "this month" etc.): ${currentTime}
+
+Store Database Content Context (Isolating current user's store data):
+${JSON.stringify(dbContext, null, 2)}`;
+
+      // Construct conversation list
+      const contents: any[] = [];
+      if (Array.isArray(history)) {
+        history.forEach((h: any) => {
+          if (h.text && h.role) {
+            contents.push({
+              role: h.role === 'assistant' ? 'model' : 'user',
+              parts: [{ text: h.text }]
+            });
+          }
+        });
+      }
+
+      // Add user's latest query
+      contents.push({
+        role: 'user',
+        parts: [{ text: message }]
+      });
+
+      let response: any = null;
+      let modelUsed = 'gemini-3.5-flash';
+      const maxRetries = 3;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: modelUsed,
+            contents,
+            config: {
+              systemInstruction,
+              temperature: 0.2, // Low temperature for high precision business metrics
+            }
+          });
+          break; // Succeeded! Break the retry loop
+        } catch (apiErr: any) {
+          console.warn(`[AI Chat] Attempt ${attempt} with model ${modelUsed} failed:`, apiErr.message || apiErr);
+          
+          if (attempt === maxRetries) {
+            throw apiErr; // Rethrow if exhausted
+          }
+
+          const errMsg = (apiErr.message || '').toLowerCase();
+          const isHighDemandOrUnavailable = errMsg.includes('503') || 
+                                           apiErr.status === 503 || 
+                                           errMsg.includes('high demand') ||
+                                           errMsg.includes('unavailable');
+          
+          if (isHighDemandOrUnavailable && modelUsed === 'gemini-3.5-flash') {
+            modelUsed = 'gemini-3.1-flash-lite';
+            console.info(`[AI Chat] Switching to fallback model: ${modelUsed} due to high demand/unavailability of gemini-3.5-flash.`);
+          }
+
+          // Delay with exponential backoff before retrying
+          const delay = attempt * 300;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+
+      const reply = response?.text || 'Nta gisubizo kibonetse. Ongera ugerageze mu kanya.';
+      res.json({ reply });
+
+    } catch (err: any) {
+      console.error('[AI Assistant Chat Route Error] ', err);
+      res.status(500).json({ error: err.message || 'Error communicating with Gemini' });
     }
   });
 

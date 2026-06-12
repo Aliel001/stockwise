@@ -15,7 +15,8 @@ import {
   UserCheck,
   ChevronDown,
   Wifi,
-  WifiOff
+  WifiOff,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -36,6 +37,7 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
     { page: Page.Products, label: 'Products', icon: Package },
     { page: Page.StockIn, label: 'Stock In', icon: PlusCircle },
     { page: Page.Sales, label: 'Sales', icon: ShoppingBag },
+    { page: Page.AIAssistant, label: 'AI Assistant', icon: Sparkles },
     { page: Page.Notifications, label: 'Alerts', icon: Bell, badge: unreadCount },
     { page: Page.ActivityLogs, label: 'Logs', icon: History },
   ];

@@ -16,6 +16,7 @@ export interface StockIn {
   productId: string;
   productName: string;
   quantity: number;
+  purchasePrice?: number;
   supplier?: string;
   notes: string;
   performedBy: string;
@@ -56,4 +57,5 @@ export enum Page {
   Sales = 'sales',
   Notifications = 'notifications',
   ActivityLogs = 'activity_logs',
+  AIAssistant = 'ai_assistant',
 }

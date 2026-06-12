@@ -20,6 +20,7 @@ import StockInView from './components/StockInView';
 import SalesView from './components/SalesView';
 import NotificationsView from './components/NotificationsView';
 import ActivityLogsView from './components/ActivityLogsView';
+import AIAssistantView from './components/AIAssistantView';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -140,6 +141,10 @@ export default function App() {
 
           {currentPage === Page.ActivityLogs && (
             <ActivityLogsView logs={activityLogs} />
+          )}
+
+          {currentPage === Page.AIAssistant && (
+            <AIAssistantView />
           )}
         </main>
       </div>

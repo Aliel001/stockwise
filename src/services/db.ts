@@ -10,6 +10,16 @@ function getHeaders(emailOverride?: string) {
   };
 }
 
+// Robust helper to parse response JSON safely and handle HTML/SPA fallback errors cleanly
+async function safeReadJson(response: Response) {
+  const contentType = response.headers.get('content-type');
+  if (!contentType || !contentType.includes('application/json')) {
+    const text = await response.text();
+    throw new Error(`Expected JSON but received content-type "${contentType}" with body: ${text.slice(0, 75)}...`);
+  }
+  return response.json();
+}
+
 // 1. Subscribe to REALTIME products using smart REST API polling
 export function subscribeProducts(userEmail: string, onChange: (products: Product[]) => void) {
   let active = true;
@@ -19,13 +29,13 @@ export function subscribeProducts(userEmail: string, onChange: (products: Produc
       const response = await fetch('/api/products', {
         headers: getHeaders(userEmail)
       });
-      if (!response.ok) throw new Error('Failed to fetch products');
-      const data = await response.json();
+      if (!response.ok) throw new Error(`Failed to fetch products (HTTP ${response.status})`);
+      const data = await safeReadJson(response);
       if (active) {
         onChange(data);
       }
-    } catch (error) {
-      console.error('[REST Error] Problems polling products:', error);
+    } catch (error: any) {
+      console.error('[REST Error] Problems polling products:', error?.message || error);
     }
   };
 
@@ -47,13 +57,13 @@ export function subscribeStockIns(userEmail: string, onChange: (stockIns: StockI
       const response = await fetch('/api/stock-ins', {
         headers: getHeaders(userEmail)
       });
-      if (!response.ok) throw new Error('Failed to fetch stock-ins');
-      const data = await response.json();
+      if (!response.ok) throw new Error(`Failed to fetch stock-ins (HTTP ${response.status})`);
+      const data = await safeReadJson(response);
       if (active) {
         onChange(data);
       }
-    } catch (error) {
-      console.error('[REST Error] Problems polling stock-ins:', error);
+    } catch (error: any) {
+      console.error('[REST Error] Problems polling stock-ins:', error?.message || error);
     }
   };
 
@@ -75,13 +85,13 @@ export function subscribeSales(userEmail: string, onChange: (sales: Sale[]) => v
       const response = await fetch('/api/sales', {
         headers: getHeaders(userEmail)
       });
-      if (!response.ok) throw new Error('Failed to fetch sales');
-      const data = await response.json();
+      if (!response.ok) throw new Error(`Failed to fetch sales (HTTP ${response.status})`);
+      const data = await safeReadJson(response);
       if (active) {
         onChange(data);
       }
-    } catch (error) {
-      console.error('[REST Error] Problems polling sales:', error);
+    } catch (error: any) {
+      console.error('[REST Error] Problems polling sales:', error?.message || error);
     }
   };
 
@@ -103,13 +113,13 @@ export function subscribeNotifications(userEmail: string, onChange: (notificatio
       const response = await fetch('/api/notifications', {
         headers: getHeaders(userEmail)
       });
-      if (!response.ok) throw new Error('Failed to fetch notifications');
-      const data = await response.json();
+      if (!response.ok) throw new Error(`Failed to fetch notifications (HTTP ${response.status})`);
+      const data = await safeReadJson(response);
       if (active) {
         onChange(data);
       }
-    } catch (error) {
-      console.error('[REST Error] Problems polling notifications:', error);
+    } catch (error: any) {
+      console.error('[REST Error] Problems polling notifications:', error?.message || error);
     }
   };
 
@@ -131,13 +141,13 @@ export function subscribeActivityLogs(userEmail: string, onChange: (logs: Activi
       const response = await fetch('/api/activity-logs', {
         headers: getHeaders(userEmail)
       });
-      if (!response.ok) throw new Error('Failed to fetch activity logs');
-      const data = await response.json();
+      if (!response.ok) throw new Error(`Failed to fetch activity logs (HTTP ${response.status})`);
+      const data = await safeReadJson(response);
       if (active) {
         onChange(data);
       }
-    } catch (error) {
-      console.error('[REST Error] Problems polling activity logs:', error);
+    } catch (error: any) {
+      console.error('[REST Error] Problems polling activity logs:', error?.message || error);
     }
   };
 
@@ -207,7 +217,7 @@ export async function deleteProduct(id: string) {
 }
 
 // 9. Restock a Product (Stock In)
-export async function stockIn(pId: string, qty: number, notes: string) {
+export async function stockIn(pId: string, qty: number, purchasePrice: number, notes: string) {
   const email = auth.currentUser?.email;
   if (!email) throw new Error('Unauthenticated');
 
@@ -217,6 +227,7 @@ export async function stockIn(pId: string, qty: number, notes: string) {
     body: JSON.stringify({
       productId: pId,
       quantity: qty,
+      purchasePrice: purchasePrice,
       notes: notes,
     }),
   });

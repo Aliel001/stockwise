@@ -213,6 +213,9 @@ export default function ProductsView({ products }: ProductsViewProps) {
                             )}
                           </p>
                           <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-1 max-w-xs">{p.description || 'No description writeup provided'}</p>
+                          <p className="text-[10.5px] mt-1 text-slate-650 font-medium font-sans">
+                            Angura: <span className="font-mono text-indigo-650 font-bold">{p.purchasePrice?.toLocaleString() || 0} RWF</span> • Agurisha: <span className="font-mono text-emerald-650 font-bold">{p.sellingPrice?.toLocaleString() || 0} RWF</span>
+                          </p>
                         </div>
                       </td>
                       <td className="py-4 px-4 text-center">
@@ -277,11 +280,23 @@ export default function ProductsView({ products }: ProductsViewProps) {
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-2 mt-4 pt-4 border-t border-slate-100 text-[11px]">
+                    <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-slate-100 text-[11px]">
                       <div>
-                        <span className="text-slate-400 block text-[9px]">Alert Level Threshold</span>
-                        <span className="font-mono text-slate-700 font-semibold">
-                          &lt;= {p.minStock} units
+                        <span className="text-slate-450 block text-[9px] font-semibold">Angura (RWF)</span>
+                        <span className="font-mono text-indigo-650 font-bold">
+                          {p.purchasePrice?.toLocaleString() || 0}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-450 block text-[9px] font-semibold">Agurisha</span>
+                        <span className="font-mono text-emerald-650 font-bold">
+                          {p.sellingPrice?.toLocaleString() || 0}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-450 block text-[9px] font-semibold">Kugabisha</span>
+                        <span className="font-mono text-slate-750 font-medium">
+                          &lt;= {p.minStock}
                         </span>
                       </div>
                     </div>
@@ -380,7 +395,30 @@ export default function ProductsView({ products }: ProductsViewProps) {
                   />
                 </div>
 
-                {/* Pricing and gross margin fields are removed from the client catalog form */}
+                <div className="grid grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 font-sans">Purchase Price (RWF) *</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      value={purchasePrice}
+                      onChange={(e) => setPurchasePrice(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 font-sans">Selling Price (RWF) *</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      value={sellingPrice}
+                      onChange={(e) => setSellingPrice(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-3.5">
                   {!editingProduct && (

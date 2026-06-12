@@ -20,11 +20,22 @@ interface StockInViewProps {
 export default function StockInView({ products, stockIns }: StockInViewProps) {
   // Form State
   const [selectedProductId, setSelectedProductId] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState<number>(0);
   const [qty, setQty] = useState<number>(0);
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  const handleProductChange = (pId: string) => {
+    setSelectedProductId(pId);
+    const prod = products.find(p => p.id === pId);
+    if (prod) {
+      setPurchasePrice(prod.purchasePrice || 0);
+    } else {
+      setPurchasePrice(0);
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -36,18 +47,23 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
       setError('Restock quantity must be a positive integer larger than zero.');
       return;
     }
+    if (purchasePrice < 0) {
+      setError('Purchase price cannot be a negative value.');
+      return;
+    }
 
     setLoading(true);
     setError(null);
     setSuccess(null);
 
     try {
-      await stockIn(selectedProductId, qty, notes);
+      await stockIn(selectedProductId, qty, purchasePrice, notes);
       
       // Success feedback & clear form
       setSuccess(`Successfully restocked inventory. Product stock updated.`);
       setSelectedProductId('');
       setQty(0);
+      setPurchasePrice(0);
       setNotes('');
     } catch (err: any) {
       setError(err?.message || 'Failed to complete transaction.');
@@ -89,7 +105,7 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
             <select
               required
               value={selectedProductId}
-              onChange={(e) => setSelectedProductId(e.target.value)}
+              onChange={(e) => handleProductChange(e.target.value)}
               className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 cursor-pointer"
             >
               <option value="">-- Choose shelf target --</option>
@@ -101,10 +117,10 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
             </select>
           </div>
 
-          <div className="grid grid-cols-1 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             {/* Adding Quantity */}
             <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Restock Quantity *</label>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Restock Qty *</label>
               <input
                 type="number"
                 required
@@ -115,9 +131,21 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
                 className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
               />
             </div>
+
+            {/* Editing Purchase Price during restock */}
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Purchase Price (RWF) *</label>
+              <input
+                type="number"
+                required
+                min={0}
+                value={purchasePrice || ''}
+                onChange={(e) => setPurchasePrice(parseFloat(e.target.value) || 0)}
+                placeholder="e.g. 500"
+                className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500"
+              />
+            </div>
           </div>
-
-
 
           {/* Transaction Note */}
           <div>
@@ -128,7 +156,7 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Ex: batch 12B, expiry April..."
-              className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-705 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 resize-none"
+              className="w-full bg-slate-50 border border-slate-100/60 rounded-xl py-2 px-3 text-xs text-slate-755 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 resize-none"
             />
           </div>
 
@@ -179,6 +207,11 @@ export default function StockInView({ products, stockIns }: StockInViewProps) {
                         <User className="w-3.5 h-3.5 text-slate-450" />
                         <span>Registered by {log.performedBy}</span>
                       </p>
+                      {log.purchasePrice !== undefined && log.purchasePrice !== null && (
+                        <p className="text-[10px] mt-1.5 text-indigo-650 font-bold font-sans">
+                          Purchase Price: <span className="font-mono text-indigo-700 bg-indigo-50/70 border border-indigo-100/50 px-1.5 py-0.5 rounded text-[9.5px]">{log.purchasePrice.toLocaleString()} RWF</span>
+                        </p>
+                      )}
                     </div>
 
                     <span className="inline-flex items-center space-x-0.5 px-2 py-0.5 bg-emerald-50 text-emerald-800 text-[10px] font-bold rounded-md">
