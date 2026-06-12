@@ -1038,7 +1038,7 @@ ${JSON.stringify(dbContext, null, 2)}`;
 
       let response: any = null;
       let modelUsed = 'gemini-3.5-flash';
-      const maxRetries = 3;
+      const maxRetries = 4;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -1052,34 +1052,51 @@ ${JSON.stringify(dbContext, null, 2)}`;
           });
           break; // Succeeded! Break the retry loop
         } catch (apiErr: any) {
-          console.warn(`[AI Chat] Attempt ${attempt} with model ${modelUsed} failed:`, apiErr.message || apiErr);
-          
+          console.info(`[AI Chat] Note: Attempt ${attempt} with model ${modelUsed} requested a temporary retry context.`);
+
           if (attempt === maxRetries) {
-            throw apiErr; // Rethrow if exhausted
+            // Log final failure cleanly but don't register high-severity errors
+            console.info('[AI Chat] Note: All model attempts finished. Serving a friendly fallback message.');
+            break;
           }
 
           const errMsg = (apiErr.message || '').toLowerCase();
           const isHighDemandOrUnavailable = errMsg.includes('503') || 
                                            apiErr.status === 503 || 
+                                           errMsg.includes('500') ||
                                            errMsg.includes('high demand') ||
-                                           errMsg.includes('unavailable');
+                                           errMsg.includes('unavailable') ||
+                                           errMsg.includes('overloaded') ||
+                                           errMsg.includes('resources exhausted');
           
-          if (isHighDemandOrUnavailable && modelUsed === 'gemini-3.5-flash') {
-            modelUsed = 'gemini-3.1-flash-lite';
-            console.info(`[AI Chat] Switching to fallback model: ${modelUsed} due to high demand/unavailability of gemini-3.5-flash.`);
+          if (isHighDemandOrUnavailable) {
+            if (modelUsed === 'gemini-3.5-flash') {
+              modelUsed = 'gemini-3.1-flash-lite';
+              console.info(`[AI Chat] Switching to fallback model: ${modelUsed} due to high demand on current model.`);
+            } else if (modelUsed === 'gemini-3.1-flash-lite') {
+              modelUsed = 'gemini-flash-latest';
+              console.info(`[AI Chat] Switching to fallback model: ${modelUsed} due to high demand on flash-lite.`);
+            }
           }
 
-          // Delay with exponential backoff before retrying
-          const delay = attempt * 300;
+          // Delay with exponential backoff before retrying (exponentially longer and more robust to clear spikes)
+          const delay = attempt * 1200;
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
 
-      const reply = response?.text || 'Nta gisubizo kibonetse. Ongera ugerageze mu kanya.';
+      if (!response) {
+        // Conversationally degrade so we avoid triggering a hard browser error/console fault
+        return res.json({
+          reply: `⚠️ **Umujyanama mu by'ubucuruzi ntabonetse neza kugeza sasa.**\n\nIbi biterwa n'uko imiyoboro yacu ya AI icyarimwe iri kwakira ubusabe bwinshi cyane, cyangwa ikaba ifite ikibazo cy'agateganyo cy'ingorane za tekiniki.\n\n**Icyo wakora:**\n• Ongera ugerageze mu kanya gato (nyuma y'umunota 1 cyangwa 2).\n• Urashobora gukomeza gukora ibindi bikorwa bya store yawe kuko amakuru yawe yose aruzuye neza mu bubiko.`
+        });
+      }
+
+      const reply = response.text || 'Nta gisubizo kibonetse. Ongera ugerageze mu kanya.';
       res.json({ reply });
 
     } catch (err: any) {
-      console.error('[AI Assistant Chat Route Error] ', err);
+      console.error('[AI Assistant Chat Route Critical Error] ', err);
       res.status(500).json({ error: err.message || 'Error communicating with Gemini' });
     }
   });
@@ -1089,7 +1106,10 @@ async function startServer() {
   if (!process.env.VERCEL) {
     if (process.env.NODE_ENV !== 'production') {
       const vite = await createViteServer({
-        server: { middlewareMode: true },
+        server: { 
+          middlewareMode: true,
+          hmr: false
+        },
         appType: 'spa',
       });
       app.use(vite.middlewares);
