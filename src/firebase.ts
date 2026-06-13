@@ -220,6 +220,58 @@ export async function logOut() {
   }
 }
 
+export async function signInWithGoogle(email: string, name: string): Promise<LocalUser> {
+  return new Promise((resolve, reject) => {
+    const popupWidth = 460;
+    const popupHeight = 600;
+    const left = window.screen.width / 2 - popupWidth / 2;
+    const top = window.screen.height / 2 - popupHeight / 2;
+    
+    const params = new URLSearchParams({ email, name });
+    const targetUrl = `/auth/google?${params.toString()}`;
+    const popup = window.open(
+      targetUrl, 
+      'google_login_sso', 
+      `width=${popupWidth},height=${popupHeight},top=${top},left=${left},resizable=yes,scrollbars=yes`
+    );
+
+    if (!popup) {
+      reject(new Error('Kwinjira byafunzwe na Browser! Banza wemerere Pop-ups kuri uru rubuga ukomeze na Google.'));
+      return;
+    }
+
+    const messageHandler = (event: MessageEvent) => {
+      const origin = event.origin;
+      if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.includes('europe-west3')) {
+         return;
+      }
+
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+        window.removeEventListener('message', messageHandler);
+        
+        const googleUser: LocalUser = event.data.user;
+        currentUser = googleUser;
+        localStorage.setItem('stockwise_user', JSON.stringify(googleUser));
+        
+        for (const listener of authListeners) {
+          listener(googleUser);
+        }
+        resolve(googleUser);
+      }
+    };
+
+    window.addEventListener('message', messageHandler);
+
+    const checkClosed = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(checkClosed);
+        window.removeEventListener('message', messageHandler);
+        reject(new Error('Google Sign-In canceled.'));
+      }
+    }, 1000);
+  });
+}
+
 // Minimal placeholder rule handling interface to avoid breaks
 export enum OperationType {
   CREATE = 'create',

@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { sendVerificationCode, verifyCodeAndLogin, signInWithEmailAndName, signInWithPassword } from '../firebase';
+import { sendVerificationCode, verifyCodeAndLogin, signInWithEmailAndName, signInWithPassword, signInWithGoogle } from '../firebase';
 import { ShieldCheck, LogIn, Store, User, Mail, Phone, ArrowLeft, KeyRound, CheckCircle2, Smartphone, AlertTriangle, ShieldAlert } from 'lucide-react';
 
 interface LoginViewProps {
@@ -123,6 +123,20 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       }
     } catch (err: any) {
       setError(err.message || 'Error occurred while verifying profile.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      await signInWithGoogle(email, name);
+      onLoginSuccess();
+    } catch (err: any) {
+      setError(err.message || 'Google authentication process was not completed.');
     } finally {
       setLoading(false);
     }
@@ -362,7 +376,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                       id="btn-continue-with-google"
                       type="button"
                       disabled={loading}
-                      onClick={handleInstantLogin}
+                      onClick={handleGoogleLogin}
                       className="w-full flex items-center justify-center space-x-3 px-6 py-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-bold tracking-wide transition-all shadow-sm hover:shadow cursor-pointer select-none"
                     >
                       <svg className="w-4 h-4 bg-transparent shrink-0" viewBox="0 0 24 24">

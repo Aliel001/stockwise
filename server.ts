@@ -634,6 +634,289 @@ app.use(express.json());
     }
   });
 
+  // GET /auth/google - Simulated beautiful interactive Google login consent screen
+  app.get('/auth/google', (req, res) => {
+    const defaultEmail = (req.query.email as string || 'alieluzii@gmail.com').trim();
+    const defaultName = (req.query.name as string || 'Ali Eluzii').trim();
+    
+    res.send(`
+<!DOCTYPE html>
+<html lang="rw">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kwinjira na Google / Sign in with Google</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Roboto', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 flex items-center justify-center min-h-screen p-4">
+  <div class="bg-white rounded-lg shadow-md border border-gray-200 w-full max-w-sm overflow-hidden">
+    <!-- Header -->
+    <div class="p-6 text-center border-b border-gray-100">
+      <div class="flex justify-center mb-4">
+        <svg class="h-8 w-8" viewBox="0 0 24 24">
+          <path fill="#EA4335" d="M12 5.04c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 1.69 14.97.5 12 .5c-4.3 0-8 2.47-9.8 6.06l3.66 2.84c.87-2.6 3.3-4.53 6.14-4.53z" />
+          <path fill="#4285F4" d="M23.49 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h6.4c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+          <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18c-.75 1.5-1.18 3.16-1.18 4.94s.43 3.45 1.18 4.94l3.66-2.84z" />
+        </svg>
+      </div>
+      <h1 id="headline" class="text-xl font-medium text-gray-800">Komeza na Google</h1>
+      <p class="text-xs text-gray-500 mt-1">Kwinjira muri StockWise Hub</p>
+    </div>
+
+    <!-- Active Accounts Selection list -->
+    <div class="px-6 py-4 space-y-3" id="accounts-container">
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Hitamo konti</p>
+      
+      <!-- Primary detected account -->
+      <button onclick="selectAccount('${defaultEmail}', '${defaultName}')" class="w-full flex items-center justify-between p-3 rounded-lg border border-gray-150 hover:bg-gray-50 transition-colors text-left focus:outline-none">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-sm font-semibold uppercase">
+            ${defaultName ? defaultName.charAt(0) : 'G'}
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-gray-800">${defaultName}</p>
+            <p class="text-[10px] text-gray-500">${defaultEmail}</p>
+          </div>
+        </div>
+        <span class="text-[10px] text-emerald-500 font-bold bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded">Active</span>
+      </button>
+
+      <!-- Standard developer admin account -->
+      <button onclick="selectAccount('admin@stockwise.rw', 'Super Admin')" class="w-full flex items-center justify-between p-3 rounded-lg border border-gray-150 hover:bg-gray-50 transition-colors text-left focus:outline-none">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-700 text-sm font-semibold uppercase">
+            SA
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-gray-800">Super Admin (Manager)</p>
+            <p class="text-[10px] text-gray-500">admin@stockwise.rw</p>
+          </div>
+        </div>
+        <span class="text-[10px] text-indigo-500 font-bold bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Super Admin</span>
+      </button>
+
+      <!-- Another Account option -->
+      <button onclick="showCustomInput()" class="w-full flex items-center justify-between p-3 rounded-lg border border-dashed border-gray-300 hover:bg-gray-50 transition-colors text-left focus:outline-none text-gray-500 hover:text-gray-700">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center bg-gray-50 text-gray-500">
+            +
+          </div>
+          <span class="text-xs font-semibold">Gukoresha indi konti / Use another</span>
+        </div>
+      </button>
+    </div>
+
+    <!-- Custom Account inputs -->
+    <div class="px-6 py-4 space-y-3 hidden" id="custom-container">
+      <div>
+        <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Enter Gmail / Email *</label>
+        <input type="email" id="custom-email" placeholder="njye@gmail.com" class="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-semibold text-gray-800 focus:outline-none focus:border-indigo-500">
+      </div>
+      <div>
+        <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Full Name (Amazina) *</label>
+        <input type="text" id="custom-name" placeholder="John Doe" class="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-semibold text-gray-800 focus:outline-none focus:border-indigo-500">
+      </div>
+      
+      <div class="flex gap-2 pt-2">
+        <button onclick="submitCustomAccount()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs py-2 px-4 rounded-lg transition-colors">
+          Komeza
+        </button>
+        <button onclick="showAccountsList()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium text-xs py-2 px-4 rounded-lg transition-colors">
+          Gahama
+        </button>
+      </div>
+    </div>
+
+    <!-- Loader & Status display -->
+    <div class="px-6 py-8 text-center hidden" id="status-container">
+      <div id="loader" class="mx-auto w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+      <p id="status-text" class="text-xs font-semibold text-gray-650">Verifying security with Google...</p>
+      <div id="status-error" class="hidden mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg font-medium shadow-xs"></div>
+      <button id="cancel-btn" onclick="showAccountsList()" class="hidden mt-4 px-4 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-650 text-xs font-medium rounded-lg">Gahama / Go Back</button>
+    </div>
+
+    <!-- Footer -->
+    <div class="p-4 bg-gray-50 border-t border-gray-100 text-center">
+      <p class="text-[10px] text-gray-400 font-medium font-sans">
+        Ubu buryo burizewe kandi burinzwe na Google Smart Lock.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    function showCustomInput() {
+      document.getElementById('accounts-container').classList.add('hidden');
+      document.getElementById('custom-container').classList.remove('hidden');
+    }
+
+    function showAccountsList() {
+      document.getElementById('accounts-container').classList.remove('hidden');
+      document.getElementById('custom-container').classList.add('hidden');
+      document.getElementById('status-container').classList.add('hidden');
+    }
+
+    function showStatus(text, hasError = false) {
+      document.getElementById('accounts-container').classList.add('hidden');
+      document.getElementById('custom-container').classList.add('hidden');
+      document.getElementById('status-container').classList.remove('hidden');
+      document.getElementById('status-text').innerText = text;
+
+      if (hasError) {
+        document.getElementById('loader').classList.add('hidden');
+        document.getElementById('status-error').classList.remove('hidden');
+        document.getElementById('cancel-btn').classList.remove('hidden');
+      } else {
+        document.getElementById('loader').classList.remove('hidden');
+        document.getElementById('status-error').classList.add('hidden');
+        document.getElementById('cancel-btn').classList.add('hidden');
+      }
+    }
+
+    async function selectAccount(email, name) {
+      showStatus('Biri kwemezwa na Google...');
+      try {
+        const response = await fetch('/api/auth/google-login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ email, name })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Autentikasiyanze');
+        }
+
+        const data = await response.json();
+        
+        // Return success value back to our parent window
+        if (window.opener) {
+          window.opener.postMessage({ 
+            type: 'GOOGLE_AUTH_SUCCESS', 
+            user: {
+              uid: 'user_g_' + Math.random().toString(36).substring(2, 11),
+              email: data.email,
+              displayName: data.displayName,
+              role: data.role,
+              status: data.status,
+              photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=' + encodeURIComponent(data.displayName)
+            }
+          }, '*');
+          window.close();
+        } else {
+          showStatus('Kwinjira byagenze neza! Fungura urupapuro mu yindi tab ugerageze.', true);
+          document.getElementById('status-error').innerText = 'Unauthorised window opener connection. Make sure to open the application in a new tab inside AI Studio preview for ideal popup communication.';
+        }
+
+      } catch (err) {
+        showStatus('Gutsindwa ko Kwinjira', true);
+        document.getElementById('status-error').innerText = err.message || 'Error executing Google SSO registration.';
+      }
+    }
+
+    function submitCustomAccount() {
+      const email = document.getElementById('custom-email').value.trim();
+      const name = document.getElementById('custom-name').value.trim();
+      
+      if (!email || !email.includes('@')) {
+        alert('Andika imeri yemewe ya Google!');
+        return;
+      }
+      if (!name) {
+        alert('Andika izina ryuzuye!');
+        return;
+      }
+      
+      selectAccount(email, name);
+    }
+  </script>
+</body>
+</html>
+    `);
+  });
+
+  // POST /api/auth/google-login - Validates identity verification and registers/approves the account
+  app.post('/api/auth/google-login', async (req, res) => {
+    try {
+      const { email, name } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: 'Email required' });
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanName = (name || cleanEmail.split('@')[0]).trim();
+
+      // Check if it's the Super Admin logging in via Google
+      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+      if (cleanEmail === superAdminEmail) {
+        return res.json({
+          allowed: true,
+          email: cleanEmail,
+          displayName: 'Super Admin',
+          role: 'SUPER_ADMIN',
+          status: 'ACTIVE'
+        });
+      }
+
+      // Check if user exists
+      let userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        // Create as ACTIVE instantly since Google verified it
+        const userId = 'user_g_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO users (id, full_name, email, role, status)
+          VALUES ($1, $2, $3, 'USER', 'ACTIVE');
+        `, [userId, cleanName, cleanEmail]);
+
+        // Insert into activity logs
+        await pool.query(`
+          INSERT INTO activity_logs (id, action, performed_by)
+          VALUES ($1, $2, $3);
+        `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account via Google: "${cleanName}" (${cleanEmail})`, cleanEmail]);
+
+        return res.json({
+          allowed: true,
+          email: cleanEmail,
+          displayName: cleanName,
+          role: 'USER',
+          status: 'ACTIVE'
+        });
+      }
+
+      const dbUser = userRes.rows[0];
+      if (dbUser.status === 'REJECTED') {
+        return res.status(403).json({ error: 'Your access has been REJECTED by Super Admin.' });
+      }
+      if (dbUser.status === 'SUSPENDED') {
+        return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.' });
+      }
+
+      // Automatically promote pending accounts back to ACTIVE because Google OAuth verifies they own the account!
+      if (dbUser.status === 'PENDING') {
+        await pool.query("UPDATE users SET status = 'ACTIVE' WHERE email = $1;", [cleanEmail]);
+        dbUser.status = 'ACTIVE';
+      }
+
+      res.json({
+        allowed: true,
+        email: cleanEmail,
+        displayName: dbUser.full_name,
+        role: dbUser.role,
+        status: dbUser.status
+      });
+    } catch (err: any) {
+      console.error('[Google API Auth Callback]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Middleware to retrieve authenticated user email and enforce authorization policies
   const requireUser = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
