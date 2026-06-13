@@ -4,6 +4,7 @@ import pg from 'pg';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import fs from 'fs';
 
 declare global {
   namespace Express {
@@ -14,8 +15,49 @@ declare global {
   }
 }
 
-// Load environmental parameters and configuration
+// Load original environmental parameters and configuration
 dotenv.config();
+
+// Fallback logic if DATABASE_URL can't be fetched
+if (!process.env.DATABASE_URL) {
+  try {
+    const envPath = path.join(process.cwd(), '.env');
+    const examplePath = path.join(process.cwd(), '.env.example');
+    
+    if (fs.existsSync(examplePath)) {
+      console.log('[PostgreSQL] DATABASE_URL is missing. Attempting resilient environment recovery.');
+      if (!fs.existsSync(envPath)) {
+        try {
+          fs.copyFileSync(examplePath, envPath);
+          dotenv.config(); // Reload env
+        } catch (copyErr) {
+          console.warn('[PostgreSQL] Could not create .env file. Reading from .env.example manually.', copyErr);
+        }
+      }
+      
+      // If still not of process.env.DATABASE_URL (e.g. read-only filesystem or container environment),
+      // manually parse .env.example to populate environment variables
+      if (!process.env.DATABASE_URL) {
+        const content = fs.readFileSync(examplePath, 'utf8');
+        content.split('\n').forEach(line => {
+          const cleanLine = line.trim();
+          if (cleanLine && !cleanLine.startsWith('#') && cleanLine.includes('=')) {
+            const eqIdx = cleanLine.indexOf('=');
+            const key = cleanLine.substring(0, eqIdx).trim();
+            let val = cleanLine.substring(eqIdx + 1).trim();
+            if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+            if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+            if (!process.env[key]) {
+              process.env[key] = val;
+            }
+          }
+        });
+      }
+    }
+  } catch (err: any) {
+    console.error('[PostgreSQL] Resilient .env recovery failed:', err.message);
+  }
+}
 
 const { Pool } = pg;
 
