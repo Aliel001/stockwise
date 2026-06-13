@@ -228,7 +228,7 @@ export async function signInWithGoogle(email: string, name: string): Promise<Loc
     const top = window.screen.height / 2 - popupHeight / 2;
     
     const params = new URLSearchParams({ email, name });
-    const targetUrl = `/auth/google?${params.toString()}`;
+    const targetUrl = `/api/auth/google?${params.toString()}`;
     const popup = window.open(
       targetUrl, 
       'google_login_sso', 
@@ -242,7 +242,13 @@ export async function signInWithGoogle(email: string, name: string): Promise<Loc
 
     const messageHandler = (event: MessageEvent) => {
       const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.includes('europe-west3')) {
+      const isAllowed = 
+        origin.endsWith('.run.app') || 
+        origin.includes('localhost') || 
+        origin.includes('europe-west3') || 
+        origin.includes('vercel.app');
+
+      if (!isAllowed) {
          return;
       }
 

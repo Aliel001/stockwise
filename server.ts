@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import pg from 'pg';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
@@ -311,6 +310,42 @@ const app = express();
 export { app };
 
 app.use(express.json());
+
+  // For Vercel Serverless environment compatibility to normalize incoming paths if /api gets stripped or decorated
+  app.use((req, res, next) => {
+    if (process.env.VERCEL) {
+      console.log(`[Vercel Serverless Routing] Original req.url: ${req.url}`);
+
+      let cleanPath = req.url;
+      const qIdx = cleanPath.indexOf('?');
+      const pathNoQuery = qIdx !== -1 ? cleanPath.substring(0, qIdx) : cleanPath;
+      const queryStr = qIdx !== -1 ? cleanPath.substring(qIdx) : '';
+
+      let subPath = pathNoQuery;
+      const vercelPrefixes = [
+        '/api/index.ts',
+        '/api/index.js',
+        '/api/index',
+        '/api'
+      ];
+
+      for (const prefix of vercelPrefixes) {
+        if (subPath.startsWith(prefix)) {
+          subPath = subPath.substring(prefix.length);
+          break;
+        }
+      }
+
+      if (!subPath.startsWith('/')) {
+        subPath = '/' + subPath;
+      }
+
+      req.url = '/api' + subPath + queryStr;
+
+      console.log(`[Vercel Serverless Routing] Normalized req.url: ${req.url}`);
+    }
+    next();
+  });
 
   // Allow CORS globally to handle custom headers and browser preflight OPTIONS requests securely
   app.use((req, res, next) => {
@@ -634,8 +669,8 @@ app.use(express.json());
     }
   });
 
-  // GET /auth/google - Simulated beautiful interactive Google login consent screen
-  app.get('/auth/google', (req, res) => {
+  // GET /api/auth/google - Simulated beautiful interactive Google login consent screen
+  app.get('/api/auth/google', (req, res) => {
     const defaultEmail = (req.query.email as string || 'alieluzii@gmail.com').trim();
     const defaultName = (req.query.name as string || 'Ali Eluzii').trim();
     
@@ -1715,6 +1750,7 @@ ${JSON.stringify(dbContext, null, 2)}`;
 async function startServer() {
   if (!process.env.VERCEL) {
     if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
         server: { 
           middlewareMode: true,
