@@ -58,4 +58,5 @@ export enum Page {
   Notifications = 'notifications',
   ActivityLogs = 'activity_logs',
   AIAssistant = 'ai_assistant',
+  SuperAdmin = 'super_admin',
 }

@@ -42,6 +42,10 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
     { page: Page.ActivityLogs, label: 'Logs', icon: History },
   ];
 
+  if (currentUser?.role === 'SUPER_ADMIN') {
+    menuItems.push({ page: Page.SuperAdmin, label: 'Access System', icon: UserCheck });
+  }
+
   const handleSignOut = () => {
     logOut();
   };

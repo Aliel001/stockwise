@@ -7,6 +7,7 @@ export interface LocalUser {
   displayName: string | null;
   photoURL: string | null;
   role?: string;
+  status?: string;
 }
 
 // Global subscribers for login state changes
@@ -113,7 +114,7 @@ export async function verifyCodeAndLogin(email: string, name: string, code: stri
   return newUser;
 }
 
-// Keep legacy signInWithEmailAndName (optional bypass or fallback)
+// Keep legacy signInWithEmailAndName (optional bypass or fallback) with backend state checks
 export async function signInWithEmailAndName(email: string, name: string) {
   const cleanEmail = email.trim().toLowerCase();
   const cleanName = name.trim();
@@ -125,11 +126,81 @@ export async function signInWithEmailAndName(email: string, name: string) {
     throw new Error('Please enter a valid store email address.');
   }
 
+  // Check status with server
+  const response = await fetch('/api/auth/login-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cleanEmail, name: cleanName })
+  });
+
+  if (!response.ok) {
+    let errMsg = 'Failed to check account state';
+    try {
+      const errData = await response.json();
+      errMsg = errData.error || errMsg;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  const data = await response.json();
+
+  if (data.requirePassword) {
+    return { requirePassword: true };
+  }
+
+  if (data.allowed === false) {
+    throw new Error(data.error || 'Awaiting Super Admin approval.');
+  }
+
   const newUser: LocalUser = {
     uid: 'user_' + Math.random().toString(36).substring(2, 11),
-    email: cleanEmail,
-    displayName: cleanName,
-    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanName)}`
+    email: data.email || cleanEmail,
+    displayName: data.displayName || cleanName,
+    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.displayName || cleanName)}`,
+    role: data.role || 'USER',
+    status: data.status || 'ACTIVE'
+  };
+
+  currentUser = newUser;
+  localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+
+  for (const listener of authListeners) {
+    listener(newUser);
+  }
+  return newUser;
+}
+
+export async function signInWithPassword(email: string, password: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  
+  const response = await fetch('/api/auth/login-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cleanEmail, password })
+  });
+
+  if (!response.ok) {
+    let errMsg = 'Incorrect password or authentication failed';
+    try {
+      const errData = await response.json();
+      errMsg = errData.error || errMsg;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  const data = await response.json();
+
+  if (data.allowed === false) {
+    throw new Error(data.error || 'Awaiting Super Admin approval.');
+  }
+
+  const newUser: LocalUser = {
+    uid: 'user_super_admin',
+    email: data.email || cleanEmail,
+    displayName: data.displayName || 'Super Admin',
+    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.displayName || 'Super Admin')}`,
+    role: data.role || 'SUPER_ADMIN',
+    status: data.status || 'ACTIVE'
   };
 
   currentUser = newUser;

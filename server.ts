@@ -4,6 +4,16 @@ import { createServer as createViteServer } from 'vite';
 import pg from 'pg';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
+
+declare global {
+  namespace Express {
+    interface Request {
+      userEmail?: string;
+      userRole?: string;
+    }
+  }
+}
 
 // Load environmental parameters and configuration
 dotenv.config();
@@ -83,6 +93,17 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
           if (parseInt(colCheck.rows[0].count) === 0) {
             console.log(`[PostgreSQL] Incompatible legacy table "${tableName}" (missing column "${requiredColumn}") detected. Rebuilding...`);
             await client.query(`DROP TABLE IF EXISTS ${tableName} CASCADE;`);
+            return;
+          }
+
+          // Also check if id column is defined with the incompatible UUID type rather than character varying / text
+          const typeCheck = await client.query(`
+            SELECT data_type FROM information_schema.columns 
+            WHERE table_name = $1 AND column_name = 'id';
+          `, [tableName]);
+          if (typeCheck.rows.length > 0 && typeCheck.rows[0].data_type === 'uuid') {
+            console.log(`[PostgreSQL] Incompatible UUID column type detected on primary key "id" for table "${tableName}". Upgrading to VARCHAR...`);
+            await client.query(`DROP TABLE IF EXISTS ${tableName} CASCADE;`);
           }
         }
       } catch (err) {
@@ -97,17 +118,24 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     await checkAndDropIncompatible('notifications', 'type');
     await checkAndDropIncompatible('activity_logs', 'performed_by');
 
-    // Core users table
+    // Core users table supporting SUPER_ADMIN control layer and approval states
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id VARCHAR(255) PRIMARY KEY,
         full_name VARCHAR(255) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
         password VARCHAR(255),
-        role VARCHAR(50) DEFAULT 'manager' CHECK (role IN ('admin', 'manager', 'cashier')),
+        role VARCHAR(50) DEFAULT 'USER',
+        status VARCHAR(50) DEFAULT 'PENDING',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Dynamic schema corrections
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'USER';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING';`);
+    await client.query(`UPDATE users SET status = 'ACTIVE' WHERE status IS NULL;`);
+    await client.query(`UPDATE users SET role = 'USER' WHERE role IS NULL;`);
 
     // Normalized Products Table
     await client.query(`
@@ -245,6 +273,30 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
       );
     }
 
+    // Super Admin & default developer / manager seeding routine on boot
+    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+    const superAdminPassword = (process.env.SUPER_ADMIN_PASSWORD || 'StockwiseSuperAdmin2026!').trim();
+    const hashedSA = crypto.createHash('sha256').update(superAdminPassword).digest('hex');
+
+    // Create / Update Super Admin
+    await client.query(`
+      INSERT INTO users (id, full_name, email, password, role, status)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (email) DO UPDATE 
+      SET role = 'SUPER_ADMIN', status = 'ACTIVE', password = $4;
+    `, ['user_super_admin', 'Super Admin', superAdminEmail, hashedSA, 'SUPER_ADMIN', 'ACTIVE']);
+
+    // Seed default developer & test users as active ADMIN so logins are preserved
+    const defaultSecures = ['alieluzii@gmail.com', 'guest.manager@stockwise.rw', 'test.account@gmail.com'];
+    for (const em of defaultSecures) {
+      await client.query(`
+        INSERT INTO users (id, full_name, email, role, status)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (email) DO UPDATE 
+        SET status = 'ACTIVE';
+      `, ['user_seed_' + Math.random().toString(36).substring(2, 11), em.split('@')[0], em, 'ADMIN', 'ACTIVE']);
+    }
+
     console.log('[PostgreSQL] Database schema initialized successfully.');
   } catch (err) {
     console.error('[PostgreSQL] Database connection/schema error: ', err);
@@ -303,46 +355,12 @@ app.use(express.json());
       return { isValid: false, reason: 'Imiterere y\'imeri ntabwo yemewe. Koresha imeri ifite inyuguti zikwiye (Urugero: manager@domain.rw).' };
     }
 
-    const [username, domain] = clean.split('@');
-
-    // Username checks
-    if (username.length < 3) {
-      return { isValid: false, reason: 'Izina rya imeri (ibice bibanziriza @) rigomba kuba rigizwe n’inyuguti nibura 3. / Username must be at least 3 characters.' };
-    }
-
-    const fakeUsernames = ['test', 'dummy', 'fake', 'abc', 'aaa', 'bbb', 'temp', 'admin', 'user', 'mock', 'asdf', 'qwerty'];
-    if (fakeUsernames.includes(username)) {
-      return { isValid: false, reason: 'Iri zina rya imeri ntabwo ryemewe muri StockWise ku bw\'umutekano kuko rimeze nka test.' };
-    }
-
-    // Temporary/Disposable Email Providers
-    const disposableDomains = [
-      'mailinator.com', 'tempmail.com', '10minutemail.com', 'yopmail.com', 'trashmail.com', 
-      'dispostable.com', 'guerrillamail.com', 'sharklasers.com', 'getairmail.com', 'temp-mail.org',
-      'maildrop.cc', 'disposable.com', 'boun.cr', 'mintemail.com', 'jetable.org', 'fakeinbox.com',
-      'mailnesia.com', 'mailcatch.com', 'temporarymail.com', 'guerrillamailblock.com', 'dispolist.com'
-    ];
-
-    if (disposableDomains.some(d => domain.includes(d))) {
-      return { isValid: false, reason: 'Imeri zo mu bwoko bwa disposable (iz’igihe gito nk\'iyi) ntabwo zemewe kubera umutekano. Koresha imeri yawe ihoraho.' };
-    }
-
-    // Unacceptable fake placeholder domains 
-    const mockDomains = [
-      'test.com', 'example.com', 'invalid.com', 'mock.com', 'fake.com', 'dummy.com', 
-      'any.com', 'something.com', 'test.co', 'xyz.com', 'abc.com', 'none.com', 'localhost', 
-      'email.com', 'mail.ru', 'test.localhost', 'example.org', 'domain.com'
-    ];
-
-    if (mockDomains.includes(domain) || domain.endsWith('.test') || domain.endsWith('.invalid')) {
-      return { isValid: false, reason: 'Iyi domain ntabwo yemewe. Banza winjize imeri nyakuri ifite agaciro ihoraho. / This email domain is blacklisted as invalid.' };
-    }
-
+    // Bypassed domain & name checks according to USER_REQUEST
     return { isValid: true, reason: '' };
   }
 
   // POST /api/auth/send-code - Initiates verification stage by generating and returning a 6-digit passcode
-  app.post('/api/auth/send-code', (req, res) => {
+  app.post('/api/auth/send-code', async (req, res) => {
     try {
       const { email, name, phone } = req.body;
       if (!email || !name) {
@@ -358,6 +376,18 @@ app.use(express.json());
       if (!emailCheckResult.isValid) {
         console.warn(`[Blocked Authentication] Attempt with bogus/dummy email: "${cleanEmail}": ${emailCheckResult.reason}`);
         return res.status(400).json({ error: emailCheckResult.reason });
+      }
+
+      // Check user blocklist or status first in /api/auth/send-code
+      const userRes = await pool.query('SELECT status FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length > 0) {
+        const uStatus = userRes.rows[0].status;
+        if (uStatus === 'REJECTED') {
+          return res.status(403).json({ error: 'Your access request has been REJECTED by Super Admin.' });
+        }
+        if (uStatus === 'SUSPENDED') {
+          return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.' });
+        }
       }
 
       if (cleanPhone) {
@@ -396,7 +426,7 @@ app.use(express.json());
   });
 
   // POST /api/auth/verify-code - Validates 6-digit passcode and authenticates session
-  app.post('/api/auth/verify-code', (req, res) => {
+  app.post('/api/auth/verify-code', async (req, res) => {
     try {
       const { email, code } = req.body;
       if (!email || !code) {
@@ -423,31 +453,328 @@ app.use(express.json());
       // Clear code after successful verification to prevent replay
       verificationCodes.delete(cleanEmail);
 
+      // Ensure registered in DB on successful OTP verification code match
+      let userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        const userId = 'user_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO users (id, full_name, email, role, status)
+          VALUES ($1, $2, $3, 'USER', 'PENDING');
+        `, [userId, record.name, cleanEmail]);
+        
+        // Insert registry log
+        await pool.query(`
+          INSERT INTO activity_logs (id, action, performed_by)
+          VALUES ($1, $2, $3);
+        `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account "${record.name}" (${cleanEmail}) - Awaiting approval`, cleanEmail]);
+
+        // Insert notification alarm alert target for the Super Admin
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO notifications (id, message, type, user_email)
+          VALUES ($1, $2, 'info', $3);
+        `, [
+          notifId,
+          `Personnel registration request: "${record.name}" (${cleanEmail}) is awaiting Super Admin approval.`,
+          superAdminEmail
+        ]);
+
+        return res.json({
+          success: true,
+          isPending: true,
+          email: cleanEmail,
+          displayName: record.name,
+          message: 'Account registered successfully! Awaiting Super Admin approval.'
+        });
+      }
+
+      const dbUser = userRes.rows[0];
+      if (dbUser.status === 'PENDING') {
+        return res.json({
+          success: true,
+          isPending: true,
+          email: cleanEmail,
+          displayName: dbUser.full_name,
+          message: 'Email verified! Account is awaiting Super Admin approval.'
+        });
+      }
+      if (dbUser.status === 'REJECTED') {
+        return res.status(403).json({ error: 'Your access has been REJECTED by Super Admin.' });
+      }
+      if (dbUser.status === 'SUSPENDED') {
+        return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.' });
+      }
+
       res.json({
         success: true,
         message: 'Email verified successfully!',
         email: cleanEmail,
-        displayName: record.name,
+        displayName: dbUser.full_name,
+        role: dbUser.role,
+        status: dbUser.status
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Middleware to retrieve authenticated user email
-  const requireUser = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const email = req.headers['x-user-email'] as string;
-    if (!email) {
-      if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
-        return res.status(401).json({ error: 'Unauthenticated. Header x-user-email is missing.' });
+  // helper function to hash passwords securely
+  function hashPassword(password: string): string {
+    return crypto.createHash('sha256').update(password).digest('hex');
+  }
+
+  // POST /api/auth/login-check - Single login validation gateway
+  app.post('/api/auth/login-check', async (req, res) => {
+    try {
+      const { email, name, password } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
       }
-      // Fallback for seamless local sandbox and developer workspace previews
-      req.userEmail = 'alieluzii@gmail.com';
-    } else {
-      req.userEmail = email.trim().toLowerCase();
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanName = (name || cleanEmail.split('@')[0]).trim();
+
+      // Check if it's the Super Admin logging in
+      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+      if (cleanEmail === superAdminEmail) {
+        if (!password) {
+          return res.json({ requirePassword: true, message: 'Super Admin login secure verification required.' });
+        }
+        const userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
+        if (userRes.rows.length === 0) {
+          return res.status(400).json({ error: 'Super Admin database record missing. Reboot server.' });
+        }
+        const dbPassword = userRes.rows[0].password;
+        const hashedInput = hashPassword(password.trim());
+        if (dbPassword !== hashedInput) {
+          return res.status(400).json({ error: 'Incorrect Super Admin password. Please try again.' });
+        }
+
+        return res.json({
+          allowed: true,
+          email: cleanEmail,
+          displayName: 'Super Admin',
+          role: 'SUPER_ADMIN',
+          status: 'ACTIVE'
+        });
+      }
+
+      // Regular User checks
+      let userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        // First-time registration! Create client as 'PENDING'
+        const userId = 'user_' + Math.random().toString(36).substring(2, 11);
+        const newUserStatus = 'PENDING';
+        
+        await pool.query(`
+          INSERT INTO users (id, full_name, email, role, status)
+          VALUES ($1, $2, $3, 'USER', $4);
+        `, [userId, cleanName, cleanEmail, newUserStatus]);
+
+        // Insert into activity logs
+        await pool.query(`
+          INSERT INTO activity_logs (id, action, performed_by)
+          VALUES ($1, $2, $3);
+        `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account "${cleanName}" (${cleanEmail}) - Awaiting approval`, cleanEmail]);
+
+        // Insert alarm notification targeting the Super Admin's incoming tray
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO notifications (id, message, type, user_email)
+          VALUES ($1, $2, 'info', $3);
+        `, [
+          notifId,
+          `Personnel registration request: "${cleanName}" (${cleanEmail}) is awaiting Super Admin approval.`,
+          superAdminEmail
+        ]);
+
+        return res.json({
+          allowed: false,
+          status: 'PENDING',
+          error: 'Account awaiting Super Admin approval'
+        });
+      }
+
+      const dbUser = userRes.rows[0];
+      if (dbUser.status === 'PENDING') {
+        return res.json({
+          allowed: false,
+          status: 'PENDING',
+          error: 'Account awaiting Super Admin approval'
+        });
+      }
+      if (dbUser.status === 'REJECTED') {
+        return res.json({
+          allowed: false,
+          status: 'REJECTED',
+          error: 'Your access request has been REJECTED by Super Admin.'
+        });
+      }
+      if (dbUser.status === 'SUSPENDED') {
+        return res.json({
+          allowed: false,
+          status: 'SUSPENDED',
+          error: 'Your access has been SUSPENDED by Super Admin.'
+        });
+      }
+
+      // If active, return success details
+      return res.json({
+        allowed: true,
+        email: dbUser.email,
+        displayName: dbUser.full_name,
+        role: dbUser.role,
+        status: dbUser.status
+      });
+
+    } catch (err: any) {
+      console.error('[Login-Check Error]', err);
+      res.status(500).json({ error: err.message });
     }
-    next();
+  });
+
+  // Middleware to retrieve authenticated user email and enforce authorization policies
+  const requireUser = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const email = req.headers['x-user-email'] as string;
+      let cleanEmail = '';
+      if (!email) {
+        if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+          return res.status(401).json({ error: 'Unauthenticated. Header x-user-email is missing.' });
+        }
+        // Fallback for seamless local sandbox and developer workspace previews
+        cleanEmail = 'alieluzii@gmail.com';
+      } else {
+        cleanEmail = email.trim().toLowerCase();
+      }
+
+      req.userEmail = cleanEmail;
+
+      // Handle query status in Postgres
+      const userRes = await pool.query('SELECT role, status FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        if (cleanEmail === superAdminEmail) {
+          req.userRole = 'SUPER_ADMIN';
+          return next();
+        }
+
+        // New client automatically captured in database as 'PENDING'
+        const userId = 'user_auto_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO users (id, full_name, email, role, status)
+          VALUES ($1, $2, $3, 'USER', 'PENDING')
+          ON CONFLICT (email) DO NOTHING;
+        `, [userId, cleanEmail.split('@')[0], cleanEmail]);
+
+        // Insert alarm notification targeting the Super Admin's incoming tray
+        const notifId = 'notif_auto_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO notifications (id, message, type, user_email)
+          VALUES ($1, $2, 'info', $3)
+          ON CONFLICT DO NOTHING;
+        `, [
+          notifId,
+          `Personnel registration request: "${cleanEmail.split('@')[0]}" (${cleanEmail}) is awaiting Super Admin approval.`,
+          superAdminEmail
+        ]);
+
+        return res.status(403).json({ error: 'Account awaiting Super Admin approval', status: 'PENDING' });
+      }
+
+      const dbUser = userRes.rows[0];
+      req.userRole = dbUser.role;
+
+      if (dbUser.status === 'PENDING') {
+        return res.status(403).json({ error: 'Account awaiting Super Admin approval', status: 'PENDING' });
+      }
+      if (dbUser.status === 'REJECTED') {
+        return res.status(403).json({ error: 'Your access has been REJECTED by Super Admin.', status: 'REJECTED' });
+      }
+      if (dbUser.status === 'SUSPENDED') {
+        return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.', status: 'SUSPENDED' });
+      }
+
+      next();
+    } catch (err: any) {
+      console.error('[requireUser Error]', err);
+      res.status(500).json({ error: 'Database authentication verification error' });
+    }
   };
+
+  // Guard specifically for Super Admin operations
+  const requireSuperAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+    if (req.userEmail === superAdminEmail || req.userRole === 'SUPER_ADMIN') {
+      next();
+    } else {
+      res.status(403).json({ error: 'Access denied: Super Admin credentials required.' });
+    }
+  };
+
+  // GET /api/super-admin/stats - View high-level system metrics
+  app.get('/api/super-admin/stats', requireUser, requireSuperAdmin, async (req, res) => {
+    try {
+      const statsRes = await pool.query(`
+        SELECT 
+          COUNT(*)::int as "totalUsers",
+          COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END)::int as "activeUsers",
+          COUNT(CASE WHEN status = 'PENDING' THEN 1 END)::int as "pendingUsers",
+          COUNT(CASE WHEN status = 'REJECTED' THEN 1 END)::int as "rejectedUsers",
+          COUNT(CASE WHEN status = 'SUSPENDED' THEN 1 END)::int as "suspendedUsers"
+        FROM users;
+      `);
+      res.json(statsRes.rows[0]);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/super-admin/users - Retrieves all registered platform users
+  app.get('/api/super-admin/users', requireUser, requireSuperAdmin, async (req, res) => {
+    try {
+      const usersRes = await pool.query(`
+        SELECT id, full_name as "fullName", email, role, status, created_at as "createdAt"
+        FROM users
+        ORDER BY created_at DESC;
+      `);
+      res.json(usersRes.rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/super-admin/users/:id/status - Action to Approve / Reject / Suspend user access
+  app.post('/api/super-admin/users/:id/status', requireUser, requireSuperAdmin, async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    if (!['ACTIVE', 'REJECTED', 'SUSPENDED', 'PENDING'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+
+    try {
+      const userCheck = await pool.query('SELECT full_name, email FROM users WHERE id = $1;', [id]);
+      if (userCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'User does not exist.' });
+      }
+      const dbUser = userCheck.rows[0];
+
+      await pool.query('UPDATE users SET status = $1 WHERE id = $2;', [status, id]);
+
+      // Audit Log Action record
+      const actionMsg = `Admin action: Status of "${dbUser.full_name}" (${dbUser.email}) changed to "${status}".`;
+      await pool.query(`
+        INSERT INTO activity_logs (id, action, performed_by)
+        VALUES ($1, $2, $3);
+      `, ['log_sa_act_' + Math.random().toString(36).substring(2, 11), actionMsg, req.userEmail]);
+
+      res.json({ success: true, message: `Access status successfully changed to ${status}.` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // --- RESTful API Service Endpoints ---
 

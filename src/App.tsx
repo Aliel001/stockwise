@@ -19,6 +19,7 @@ import SalesView from './components/SalesView';
 import NotificationsView from './components/NotificationsView';
 import ActivityLogsView from './components/ActivityLogsView';
 import AIAssistantView from './components/AIAssistantView';
+import SuperAdminView from './components/SuperAdminView';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -143,6 +144,10 @@ export default function App() {
 
           {currentPage === Page.AIAssistant && (
             <AIAssistantView />
+          )}
+
+          {currentPage === Page.SuperAdmin && (
+            <SuperAdminView currentUserEmail={currentUser.email} />
           )}
         </main>
       </div>

@@ -1,55 +1,18 @@
 import { useState, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { sendVerificationCode, verifyCodeAndLogin } from '../firebase';
-import { ShieldCheck, LogIn, Store, User, Mail, Phone, ArrowLeft, KeyRound, CheckCircle2, Smartphone, AlertTriangle } from 'lucide-react';
+import { sendVerificationCode, verifyCodeAndLogin, signInWithEmailAndName, signInWithPassword } from '../firebase';
+import { ShieldCheck, LogIn, Store, User, Mail, Phone, ArrowLeft, KeyRound, CheckCircle2, Smartphone, AlertTriangle, ShieldAlert } from 'lucide-react';
 
 interface LoginViewProps {
   onLoginSuccess: () => void;
 }
 
-// Client-side quick validation to prevent obvious fake/disposable emails immediately
 function isRealEmailLocal(email: string): { isValid: boolean; reason: string } {
   const clean = email.trim().toLowerCase();
-  
-  // Basic Regex match
   const regex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
   if (!regex.test(clean)) {
     return { isValid: false, reason: 'Imiterere y’imeri ntabwo yemewe. Koresha imeri ifite inyuguti zikwiye (Urugero: manager@domain.rw).' };
   }
-
-  const [username, domain] = clean.split('@');
-
-  if (username.length < 3) {
-    return { isValid: false, reason: 'Izina rya imeri rigomba kuba rikwiye nibura inyuguti 3. / Email username part must be at least 3 characters.' };
-  }
-
-  const fakeUsernames = ['test', 'dummy', 'fake', 'abc', 'aaa', 'bbb', 'temp', 'admin', 'user', 'mock', 'asdf', 'qwerty'];
-  if (fakeUsernames.includes(username)) {
-    return { isValid: false, reason: 'Iri zina rya imeri ntabwo ryemewe kuko  rimeze nk’iy’ikigereranyo (test).' };
-  }
-
-  // Common disposable platforms
-  const disposableDomains = [
-    'mailinator.com', 'tempmail.com', '10minutemail.com', 'yopmail.com', 'trashmail.com', 
-    'dispostable.com', 'guerrillamail.com', 'sharklasers.com', 'getairmail.com', 'temp-mail.org',
-    'maildrop.cc', 'disposable.com', 'boun.cr'
-  ];
-
-  if (disposableDomains.some(d => domain.includes(d))) {
-    return { isValid: false, reason: 'Imeri zo mu bwoko bwa disposable (iz’igihe gito zihuse) ntabwo zemewe ku bw’umutekano.' };
-  }
-
-  // Blacklisted mock domains
-  const mockDomains = [
-    'test.com', 'example.com', 'invalid.com', 'mock.com', 'fake.com', 'dummy.com', 
-    'any.com', 'something.com', 'test.co', 'xyz.com', 'abc.com', 'none.com', 'localhost', 
-    'email.com', 'mail.ru', 'test.localhost', 'example.org', 'domain.com'
-  ];
-
-  if (mockDomains.includes(domain) || domain.endsWith('.test') || domain.endsWith('.invalid')) {
-    return { isValid: false, reason: 'Iri somero rya imeri (domain) ntabwo ryemewe muri sisiteme kuko ari iy’ikigereranyo feyiki.' };
-  }
-
   return { isValid: true, reason: '' };
 }
 
@@ -58,6 +21,8 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [email, setEmail] = useState('alieluzii@gmail.com');
   const [name, setName] = useState('Ali Eluzii');
   const [phone, setPhone] = useState('+250 788 123 456');
+  const [password, setPassword] = useState('');
+  const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [code, setCode] = useState('');
   const [sentCode, setSentCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -70,7 +35,6 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     setError(null);
     setSuccessMsg(null);
 
-    // 1. Instantly check email locally
     const check = isRealEmailLocal(email);
     if (!check.isValid) {
       setError(check.reason);
@@ -78,7 +42,6 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       return;
     }
 
-    // 2. Validate phone number format
     const phoneTrimmed = phone.trim();
     if (!phoneTrimmed || phoneTrimmed.length < 8) {
       setError('Banza winjize numero ya telefoni ifite ireme. / Please insert a valid store phone contact.');
@@ -87,7 +50,6 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     }
 
     try {
-      // Send parameters to local server-side authenticator
       const res = await sendVerificationCode(email, name, phoneTrimmed);
       setSentCode(res.code || '154920');
       setSuccessMsg('Agaciro k’umutekano koherejwe neza ku buryo bw’ikoranabuhanga!');
@@ -123,6 +85,44 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       setSuccessMsg('Agaciro gashya k’umutekano k’isuzuma koherejwe neza!');
     } catch (err: any) {
       setError(err?.message || 'Failed to resend verification code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleInstantLogin = async () => {
+    setLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    const check = isRealEmailLocal(email);
+    if (!check.isValid) {
+      setError(check.reason);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      if (showPasswordInput) {
+        if (!password) {
+          setError('Please input your access password.');
+          setLoading(false);
+          return;
+        }
+        await signInWithPassword(email, password);
+        onLoginSuccess();
+        return;
+      }
+
+      const res = await signInWithEmailAndName(email, name);
+      if (res && (res as any).requirePassword) {
+        setShowPasswordInput(true);
+        setSuccessMsg('Secure environment triggered. Supply credentials to log in.');
+      } else {
+        onLoginSuccess();
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error occurred while verifying profile.');
     } finally {
       setLoading(false);
     }
@@ -164,18 +164,32 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 10 }}
                 transition={{ duration: 0.2 }}
-                onSubmit={handleRequestCode} 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (showPasswordInput) {
+                    handleInstantLogin();
+                  } else {
+                    handleRequestCode(e);
+                  }
+                }} 
                 className="space-y-4"
               >
-                <div className="bg-amber-50/80 p-4 rounded-xl border border-amber-200/50 flex items-start space-x-3">
-                  <ShieldCheck className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                <div className="bg-indigo-50/80 p-4 rounded-xl border border-indigo-200/50 flex items-start space-x-3">
+                  <ShieldCheck className="w-5 h-5 text-indigo-700 shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-xs font-bold text-amber-900 leading-none">Imeri Nyamakuru Yasabwa ku Mutekano</p>
-                    <p className="text-[11px] text-amber-800 mt-1 leading-relaxed">
-                      Ku mutekano w&apos;ububiko bwawe, imeri za baringa zizwi na disposable imeri nka mailinator.com zihita zihakanwa. Banza wandike imeri na numero nzima yo kwakira ubutumwa bugufi bw&apos;isuzuma.
+                    <p className="text-xs font-bold text-indigo-900 leading-none">Uburyo Bwihuse kandi Bworoshye bwo Kwinjira</p>
+                    <p className="text-[11px] text-indigo-800 mt-1 leading-relaxed">
+                      Urashobora gukoresha imeri iyo ari yo yose cyangwa ugakomeza unyuze kuri **Google** ako kanya badasabye kode y&apos;umutekano!
                     </p>
                   </div>
                 </div>
+
+                {successMsg && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-150 text-emerald-800 rounded-xl text-xs font-semibold flex items-center space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{successMsg}</span>
+                  </div>
+                )}
 
                 {error && (
                   <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-semibold flex items-start space-x-2">
@@ -184,82 +198,195 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                   </div>
                 )}
 
-                {/* Name Input */}
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Amazina Yombi / Store Manager Full Name *</label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
-                      <User className="w-4 h-4" />
-                    </span>
-                    <input
-                      id="input-login-name"
-                      type="text"
-                      required
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Ali Eluzii"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
-                    />
+                {showPasswordInput ? (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Super Admin Password *</label>
+                      <span className="text-[10px] font-bold text-indigo-600 flex items-center gap-1">
+                        <KeyRound className="w-3 h-3" />
+                        Secure Key Entry
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                        <KeyRound className="w-4 h-4" />
+                      </span>
+                      <input
+                        id="input-login-password"
+                        type="password"
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
+                      />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <>
+                    {/* Name Input */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Amazina Yombi / Store Manager Full Name *</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                          <User className="w-4 h-4" />
+                        </span>
+                        <input
+                          id="input-login-name"
+                          type="text"
+                          required
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Ali Eluzii"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
+                        />
+                      </div>
+                    </div>
 
-                {/* Email Input */}
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Imeri Nyakuri / Genuine Store Email *</label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
-                      <Mail className="w-4 h-4" />
-                    </span>
-                    <input
-                      id="input-login-email"
-                      type="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="manager@domain.rw"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
-                    />
-                  </div>
-                  <p className="text-[9px] text-slate-400 mt-1 pl-1">
-                    System rejects any temporary/disposable address arrays during verification logic.
-                  </p>
-                </div>
+                    {/* Email Input */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Store Email Address *</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                          <Mail className="w-4 h-4" />
+                        </span>
+                        <input
+                          id="input-login-email"
+                          type="email"
+                          required
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          placeholder="manager@domain.rw"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
+                        />
+                      </div>
+                      <p className="text-[9px] text-slate-400 mt-1 pl-1">
+                        Urashobora kwandika imeri iyo ari yo yose wifuza ugahita winjira.
+                      </p>
+                    </div>
 
-                {/* Telephone Contact Input */}
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Telefoni yo Kwakira SMS / Store Contact for SMS OTP *</label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
-                      <Phone className="w-4 h-4" />
-                    </span>
-                    <input
-                      id="input-login-phone"
-                      type="text"
-                      required
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+250 788 123 456"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
-                    />
-                  </div>
-                </div>
+                    {/* Telephone Contact Input */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Telefoni / Store Contact *</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                          <Phone className="w-4 h-4" />
+                        </span>
+                        <input
+                          id="input-login-phone"
+                          type="text"
+                          required
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          placeholder="+250 788 123 456"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-slate-800 font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-600 transition-colors"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
 
-                {/* Submit trigger */}
-                <button
-                  id="btn-request-verification"
-                  type="submit"
-                  disabled={loading}
-                  className="w-full flex items-center justify-center space-x-2 px-6 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-colors shadow-lg shadow-slate-900/15 cursor-pointer disabled:opacity-50"
-                >
-                  {loading ? (
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <div className="space-y-3 pt-1">
+                  {showPasswordInput ? (
+                    <div className="flex gap-2">
+                      <button
+                        id="btn-fast-login-bypass"
+                        type="button"
+                        disabled={loading}
+                        onClick={handleInstantLogin}
+                        className="flex-1 flex items-center justify-center space-x-2 px-6 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-colors shadow-lg shadow-slate-900/15 cursor-pointer disabled:opacity-50"
+                      >
+                        {loading ? (
+                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <>
+                            <LogIn className="w-4 h-4" />
+                            <span>Unlock System</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowPasswordInput(false);
+                          setPassword('');
+                          setSuccessMsg(null);
+                        }}
+                        className="px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   ) : (
                     <>
-                      <KeyRound className="w-4 h-4" />
-                      <span>Ohereza Agaciro K’umutekano na SMS</span>
+                      {/* Submit trigger */}
+                      <button
+                        id="btn-fast-login-bypass"
+                        type="button"
+                        disabled={loading}
+                        onClick={handleInstantLogin}
+                        className="w-full flex items-center justify-center space-x-2 px-6 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-colors shadow-lg shadow-slate-900/15 cursor-pointer disabled:opacity-50"
+                      >
+                        {loading ? (
+                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <>
+                            <LogIn className="w-4 h-4" />
+                            <span>Injira Ako Kanya / Instant Login</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        id="btn-request-verification"
+                        type="submit"
+                        disabled={loading}
+                        className="w-full flex items-center justify-center space-x-2 px-6 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-[10px] font-semibold tracking-wide transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        <span>Ohereza OTP kuri Mail (Uburyo bukurikirana)</span>
+                      </button>
                     </>
                   )}
-                </button>
+                </div>
+
+                {!showPasswordInput && (
+                  <>
+                    <div className="relative my-4 flex py-1 items-center">
+                      <div className="flex-grow border-t border-slate-150" />
+                      <span className="flex-shrink mx-3 text-slate-400 text-[9px] font-bold uppercase tracking-widest bg-white px-2">Cyangwa gukoresha</span>
+                      <div className="flex-grow border-t border-slate-150" />
+                    </div>
+
+                    {/* Continue with Google button */}
+                    <button
+                      id="btn-continue-with-google"
+                      type="button"
+                      disabled={loading}
+                      onClick={handleInstantLogin}
+                      className="w-full flex items-center justify-center space-x-3 px-6 py-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-bold tracking-wide transition-all shadow-sm hover:shadow cursor-pointer select-none"
+                    >
+                      <svg className="w-4 h-4 bg-transparent shrink-0" viewBox="0 0 24 24">
+                        <path
+                          fill="#4285F4"
+                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                        />
+                      </svg>
+                      <span>Komeza na Google / Continue with Google</span>
+                    </button>
+                  </>
+                )}
               </motion.form>
             ) : (
               <motion.form 
@@ -369,7 +496,6 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                         <p className="truncate"><span className="text-slate-500">Sender:</span> +250000_SMS</p>
                         <p className="truncate"><span className="text-slate-500">Recipient:</span> {phone}</p>
                         
-                        {/* Dynamic Message bubble style */}
                         <div className="mt-1.5 bg-slate-800 border-l-2 border-pink-500 p-1.5 rounded text-[9px] text-slate-300 leading-relaxed font-sans">
                           Ubuzehe bukabije bwa SMS: StockWise OTP code yanyu ni <strong className="text-pink-400 font-mono text-[10px] bg-pink-500/10 px-1 rounded">{sentCode}</strong>. Ntuyisangize undi muntu!
                         </div>
