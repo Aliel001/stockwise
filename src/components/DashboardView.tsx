@@ -393,7 +393,7 @@ export default function DashboardView({ products, sales, notificationsCount, onN
 
           {/* Recharts Render Container */}
           <div className="w-full h-72">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               {timeframe === 'yearly' ? (
                 <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>

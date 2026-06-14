@@ -59,10 +59,18 @@ if (!process.env.DATABASE_URL) {
   }
 }
 
-const { Pool } = pg;
+const Pool = (pg.Pool || (pg as any).default?.Pool) as typeof pg.Pool;
 
 // 1. Connection Optimization using PgBouncer/Neon compatible Pool configuration
-let dbUrl = process.env.DATABASE_URL || '';
+let dbUrl = (process.env.DATABASE_URL || '').trim();
+
+// Strip any accidental enclosing single or double quotes which would cause Pg driver connection parsing failures
+if (dbUrl.startsWith('"') && dbUrl.endsWith('"')) {
+  dbUrl = dbUrl.slice(1, -1).trim();
+}
+if (dbUrl.startsWith("'") && dbUrl.endsWith("'")) {
+  dbUrl = dbUrl.slice(1, -1).trim();
+}
 
 // Resilient default Neon database fallback to ensure seamless zero-configuration deployments on Vercel
 if (!dbUrl) {
@@ -98,7 +106,9 @@ let schemaInitializingPromise: Promise<void> | null = null;
 async function ensureSchemaInitialized(): Promise<void> {
   if (isSchemaInitialized) return;
   if (!schemaInitializingPromise) {
-    schemaInitializingPromise = initializeSchema()
+    const maxRetries = process.env.VERCEL ? 1 : 5;
+    const retryDelay = process.env.VERCEL ? 1000 : 2500;
+    schemaInitializingPromise = initializeSchema(maxRetries, retryDelay)
       .then(() => {
         isSchemaInitialized = true;
       })
@@ -443,7 +453,7 @@ app.use(express.json());
   // In traditional environments, pre-load the schema in the background to ensure fast response.
   // In Vercel serverless environments, bypass the startup call to prevent cold-start delay timeouts.
   if (!process.env.VERCEL) {
-    initializeSchema().catch((err) => {
+    ensureSchemaInitialized().catch((err) => {
       console.error('[PostgreSQL] Background schema initialization failed:', err);
     });
   } else {
