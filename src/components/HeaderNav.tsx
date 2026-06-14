@@ -32,7 +32,7 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
 
-  const menuItems = [
+  let menuItems = [
     { page: Page.Dashboard, label: 'Dashboard', icon: LayoutDashboard },
     { page: Page.Products, label: 'Products', icon: Package },
     { page: Page.StockIn, label: 'Stock In', icon: PlusCircle },
@@ -43,6 +43,12 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
   ];
 
   if (currentUser?.role === 'SUPER_ADMIN') {
+    // filter out Products, Stock In, and Sales views for Super Admin role
+    menuItems = menuItems.filter(item => 
+      item.page !== Page.Products && 
+      item.page !== Page.StockIn && 
+      item.page !== Page.Sales
+    );
     menuItems.push({ page: Page.SuperAdmin, label: 'Access System', icon: UserCheck });
   }
 

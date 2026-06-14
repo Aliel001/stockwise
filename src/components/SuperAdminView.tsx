@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, UserCheck, ShieldAlert, Ban, Clock, Search, Shield, RefreshCw, Bell } from 'lucide-react';
+import { Users, UserCheck, ShieldAlert, Ban, Clock, Search, Shield, RefreshCw, Bell, Trash2 } from 'lucide-react';
 
 interface SuperAdminUser {
   id: string;
@@ -35,6 +35,7 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'ACTIVE' | 'REJECTED' | 'SUSPENDED'>('ALL');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -106,6 +107,39 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
       await fetchUsersAndStats();
     } catch (err: any) {
       setErrorMsg(err.message || 'Could not update user status');
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    try {
+      setActionLoadingId(userId);
+      setErrorMsg(null);
+      setSuccessMsg(null);
+
+      const response = await fetch(`/api/super-admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: {
+          'x-user-email': currentUserEmail,
+        },
+      });
+
+      if (!response.ok) {
+        let errText = 'Failed to delete user';
+        try {
+          const errData = await response.json();
+          errText = errData.error || errText;
+        } catch {}
+        throw new Error(errText);
+      }
+
+      const data = await response.json();
+      setSuccessMsg(data.message || 'User successfully deleted!');
+      setConfirmDeleteId(null);
+      await fetchUsersAndStats();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Could not delete user');
     } finally {
       setActionLoadingId(null);
     }
@@ -200,10 +234,37 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                   <button
                     onClick={() => handleUpdateStatus(usr.id, 'REJECTED')}
                     disabled={actionLoadingId === usr.id}
-                    className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-bold rounded-lg border border-rose-200 shadow-sm transition-colors cursor-pointer select-none"
+                    className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-bold rounded-lg border border-rose-250 shadow-sm transition-colors cursor-pointer select-none"
                   >
                     Reject
                   </button>
+
+                  {confirmDeleteId === usr.id ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleDeleteUser(usr.id)}
+                        disabled={actionLoadingId === usr.id}
+                        className="px-2 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold rounded-lg"
+                      >
+                        Confirm Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-1.5 py-1.5 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-lg border border-slate-200"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDeleteId(usr.id)}
+                      disabled={actionLoadingId === usr.id}
+                      className="p-1.5 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 text-slate-500 rounded-lg border border-slate-200 transition-colors"
+                      title="Permanently Delete User"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -369,7 +430,7 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                                   id={`btn_approve_${user.id}`}
                                   disabled={actionLoadingId === user.id}
                                   onClick={() => handleUpdateStatus(user.id, 'ACTIVE')}
-                                  className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-md transition-colors"
+                                  className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-md transition-colors font-sans"
                                   title="Approve User"
                                 >
                                   Approve
@@ -381,7 +442,7 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                                   id={`btn_suspend_${user.id}`}
                                   disabled={actionLoadingId === user.id}
                                   onClick={() => handleUpdateStatus(user.id, 'SUSPENDED')}
-                                  className="px-2 py-1 bg-orange-50 hover:bg-orange-100 text-orange-700 font-bold rounded-md transition-colors"
+                                  className="px-2 py-1 bg-orange-50 hover:bg-orange-100 text-orange-700 font-bold rounded-md transition-colors font-sans"
                                   title="Suspend User"
                                 >
                                   Suspend
@@ -393,7 +454,7 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                                   id={`btn_reject_${user.id}`}
                                   disabled={actionLoadingId === user.id}
                                   onClick={() => handleUpdateStatus(user.id, 'REJECTED')}
-                                  className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-md transition-colors"
+                                  className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-md transition-colors font-sans"
                                   title="Reject User"
                                 >
                                   Reject
@@ -406,10 +467,42 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                                   id={`btn_pending_${user.id}`}
                                   disabled={actionLoadingId === user.id}
                                   onClick={() => handleUpdateStatus(user.id, 'PENDING')}
-                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-500 font-bold rounded-md transition-colors"
+                                  className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-500 font-bold rounded-md transition-colors font-sans"
                                   title="Reset back to Awaiting Approval Status"
                                 >
                                   Reset
+                                </button>
+                              )}
+
+                              {confirmDeleteId === user.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    id={`btn_confirm_delete_${user.id}`}
+                                    disabled={actionLoadingId === user.id}
+                                    onClick={() => handleDeleteUser(user.id)}
+                                    className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-md text-[10px] font-sans"
+                                    title="Confirm Permanent Deletion"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    id={`btn_cancel_delete_${user.id}`}
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    className="px-1.5 py-1 bg-slate-100 text-slate-600 hover:bg-slate-200 font-bold rounded-md text-[10px] font-sans"
+                                    title="Cancel Deletion"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  id={`btn_delete_${user.id}`}
+                                  disabled={actionLoadingId === user.id}
+                                  onClick={() => setConfirmDeleteId(user.id)}
+                                  className="px-2 py-1 bg-rose-50 hover:bg-rose-150 text-rose-700 hover:text-rose-800 font-bold rounded-md transition-colors font-sans"
+                                  title="Permanently Delete User"
+                                >
+                                  Delete
                                 </button>
                               )}
                             </>

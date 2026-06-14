@@ -5,12 +5,15 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import fs from 'fs';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
 
 declare global {
   namespace Express {
     interface Request {
       userEmail?: string;
       userRole?: string;
+      userStoreId?: string;
     }
   }
 }
@@ -192,6 +195,15 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     await checkAndDropIncompatible('notifications', 'type');
     await checkAndDropIncompatible('activity_logs', 'performed_by');
 
+    // Core stores table based on suggestions
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS stores (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        owner_id VARCHAR(255)
+      );
+    `);
+
     // Core users table supporting SUPER_ADMIN control layer and approval states
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -201,6 +213,7 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
         password VARCHAR(255),
         role VARCHAR(50) DEFAULT 'USER',
         status VARCHAR(50) DEFAULT 'PENDING',
+        store_id VARCHAR(255),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -208,8 +221,16 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     // Dynamic schema corrections
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'USER';`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING';`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
     await client.query(`UPDATE users SET status = 'ACTIVE' WHERE status IS NULL;`);
     await client.query(`UPDATE users SET role = 'USER' WHERE role IS NULL;`);
+
+    // Ensure store_id exist on all other transaction tables
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE stock_ins ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
 
     // Normalized Products Table
     await client.query(`
@@ -371,6 +392,70 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
       `, ['user_seed_' + Math.random().toString(36).substring(2, 11), em.split('@')[0], em, 'ADMIN', 'ACTIVE']);
     }
 
+    // --- Dynamic Self-Healing Tenant Migration & Backfilling ---
+    console.log('[PostgreSQL] Running self-healing backfill for tenant-isolation...');
+    const unresolvedUsers = await client.query(`SELECT id, full_name, email, role FROM users WHERE store_id IS NULL;`);
+    for (const u of unresolvedUsers.rows) {
+      if (u.role === 'SUPER_ADMIN') continue;
+      
+      const email = u.email.trim().toLowerCase();
+      const parts = email.split('@');
+      const domain = parts[1];
+      const genericDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'mail.com', 'protonmail.com', 'zoho.com', 'yandex.com'];
+      
+      let storeId = '';
+      if (!genericDomains.includes(domain)) {
+        // Look up if any other user has a store_id for this domain
+        const domainOwner = await client.query(`SELECT store_id FROM users WHERE email LIKE $1 AND store_id IS NOT NULL LIMIT 1;`, [`%@${domain}`]);
+        if (domainOwner.rows.length > 0) {
+          storeId = domainOwner.rows[0].store_id;
+        }
+      }
+      
+      if (!storeId) {
+        storeId = 'store_' + Math.random().toString(36).substring(2, 11);
+        const storeName = !genericDomains.includes(domain) 
+          ? domain.split('.')[0].toUpperCase() + ' Store'
+          : u.full_name + "'s Store";
+          
+        await client.query(`INSERT INTO stores (id, name, owner_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`, [storeId, storeName, u.id]);
+      }
+      
+      await client.query(`UPDATE users SET store_id = $1 WHERE id = $2;`, [storeId, u.id]);
+    }
+
+    // Sync store_id for all products, sales, stock_ins, notifications, and activity_logs
+    await client.query(`
+      UPDATE products p
+      SET store_id = u.store_id
+      FROM users u
+      WHERE p.created_by = u.email AND p.store_id IS NULL;
+    `);
+    await client.query(`
+      UPDATE sales s
+      SET store_id = u.store_id
+      FROM users u
+      WHERE s.performed_by = u.email AND s.store_id IS NULL;
+    `);
+    await client.query(`
+      UPDATE stock_ins si
+      SET store_id = u.store_id
+      FROM users u
+      WHERE si.performed_by = u.email AND si.store_id IS NULL;
+    `);
+    await client.query(`
+      UPDATE notifications n
+      SET store_id = u.store_id
+      FROM users u
+      WHERE n.user_email = u.email AND n.store_id IS NULL;
+    `);
+    await client.query(`
+      UPDATE activity_logs al
+      SET store_id = u.store_id
+      FROM users u
+      WHERE al.performed_by = u.email AND al.store_id IS NULL;
+    `);
+
     console.log('[PostgreSQL] Database schema initialized successfully.');
   } catch (err) {
     console.error('[PostgreSQL] Database connection/schema error: ', err);
@@ -385,7 +470,10 @@ const app = express();
 export { app };
 export default app;
 
+const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-stockwise-realtime-inventory-portal';
+
 app.use(express.json());
+app.use(cookieParser());
 
   // For Vercel Serverless environment compatibility to normalize incoming paths if /api gets stripped or decorated
   app.use((req, res, next) => {
@@ -634,6 +722,14 @@ app.use(express.json());
         return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.' });
       }
 
+      const token = jwt.sign({ email: cleanEmail }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('stockwise_session', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000
+      });
+
       res.json({
         success: true,
         message: 'Email verified successfully!',
@@ -677,6 +773,14 @@ app.use(express.json());
         if (dbPassword !== hashedInput) {
           return res.status(400).json({ error: 'Incorrect Super Admin password. Please try again.' });
         }
+
+        const token = jwt.sign({ email: cleanEmail }, JWT_SECRET, { expiresIn: '7d' });
+        res.cookie('stockwise_session', token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 7 * 24 * 60 * 60 * 1000
+        });
 
         return res.json({
           allowed: true,
@@ -748,6 +852,14 @@ app.use(express.json());
       }
 
       // If active, return success details
+      const token = jwt.sign({ email: dbUser.email }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('stockwise_session', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000
+      });
+
       return res.json({
         allowed: true,
         email: dbUser.email,
@@ -764,8 +876,9 @@ app.use(express.json());
 
   // GET /api/auth/google - Simulated beautiful interactive Google login consent screen
   app.get('/api/auth/google', (req, res) => {
-    const defaultEmail = (req.query.email as string || 'alieluzii@gmail.com').trim();
-    const defaultName = (req.query.name as string || 'Ali Eluzii').trim();
+    const defaultEmail = (req.query.email as string || '').trim();
+    const defaultName = (req.query.name as string || '').trim();
+    const hasDefault = defaultEmail !== '';
     
     res.send(`
 <!DOCTYPE html>
@@ -799,7 +912,7 @@ app.use(express.json());
     </div>
 
     <!-- Active Accounts Selection list -->
-    <div class="px-6 py-4 space-y-3" id="accounts-container">
+    <div class="px-6 py-4 space-y-3 ${hasDefault ? '' : 'hidden'}" id="accounts-container">
       <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Hitamo konti</p>
       
       <!-- Primary detected account -->
@@ -816,20 +929,6 @@ app.use(express.json());
         <span class="text-[10px] text-emerald-500 font-bold bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded">Active</span>
       </button>
 
-      <!-- Standard developer admin account -->
-      <button onclick="selectAccount('admin@stockwise.rw', 'Super Admin')" class="w-full flex items-center justify-between p-3 rounded-lg border border-gray-150 hover:bg-gray-50 transition-colors text-left focus:outline-none">
-        <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-700 text-sm font-semibold uppercase">
-            SA
-          </div>
-          <div>
-            <p class="text-xs font-semibold text-gray-800">Super Admin (Manager)</p>
-            <p class="text-[10px] text-gray-500">admin@stockwise.rw</p>
-          </div>
-        </div>
-        <span class="text-[10px] text-indigo-500 font-bold bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">Super Admin</span>
-      </button>
-
       <!-- Another Account option -->
       <button onclick="showCustomInput()" class="w-full flex items-center justify-between p-3 rounded-lg border border-dashed border-gray-300 hover:bg-gray-50 transition-colors text-left focus:outline-none text-gray-500 hover:text-gray-700">
         <div class="flex items-center space-x-3">
@@ -842,7 +941,7 @@ app.use(express.json());
     </div>
 
     <!-- Custom Account inputs -->
-    <div class="px-6 py-4 space-y-3 hidden" id="custom-container">
+    <div class="px-6 py-4 space-y-3 ${hasDefault ? 'hidden' : ''}" id="custom-container">
       <div>
         <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Enter Gmail / Email *</label>
         <input type="email" id="custom-email" placeholder="njye@gmail.com" class="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-xs font-semibold text-gray-800 focus:outline-none focus:border-indigo-500">
@@ -984,41 +1083,65 @@ app.use(express.json());
       // Check if it's the Super Admin logging in via Google
       const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
       if (cleanEmail === superAdminEmail) {
-        return res.json({
-          allowed: true,
-          email: cleanEmail,
-          displayName: 'Super Admin',
-          role: 'SUPER_ADMIN',
-          status: 'ACTIVE'
-        });
+        return res.status(403).json({ error: 'Super Admin login must go through the secure password verification gate.' });
       }
 
       // Check if user exists
       let userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
       if (userRes.rows.length === 0) {
-        // Create as ACTIVE instantly since Google verified it
         const userId = 'user_g_' + Math.random().toString(36).substring(2, 11);
-        await pool.query(`
-          INSERT INTO users (id, full_name, email, role, status)
-          VALUES ($1, $2, $3, 'USER', 'ACTIVE');
-        `, [userId, cleanName, cleanEmail]);
+        
+        // Resolve store_id dynamically
+        const domain = cleanEmail.split('@')[1];
+        const genericDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'mail.com', 'protonmail.com', 'zoho.com', 'yandex.com'];
+        let storeId = '';
+        if (!genericDomains.includes(domain)) {
+          const domainOwner = await pool.query(`SELECT store_id FROM users WHERE email LIKE $1 AND store_id IS NOT NULL LIMIT 1;`, [`%@${domain}`]);
+          if (domainOwner.rows.length > 0) {
+            storeId = domainOwner.rows[0].store_id;
+          }
+        }
+        
+        if (!storeId) {
+          storeId = 'store_' + Math.random().toString(36).substring(2, 11);
+          const storeName = !genericDomains.includes(domain) 
+            ? domain.split('.')[0].toUpperCase() + ' Store'
+            : cleanName + "'s Store";
+            
+          await pool.query(`INSERT INTO stores (id, name, owner_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`, [storeId, storeName, userId]);
+        }
 
-        // Insert into activity logs
         await pool.query(`
-          INSERT INTO activity_logs (id, action, performed_by)
-          VALUES ($1, $2, $3);
-        `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account via Google: "${cleanName}" (${cleanEmail})`, cleanEmail]);
+          INSERT INTO users (id, full_name, email, role, status, store_id)
+          VALUES ($1, $2, $3, 'USER', 'PENDING', $4);
+        `, [userId, cleanName, cleanEmail, storeId]);
 
-        return res.json({
-          allowed: true,
-          email: cleanEmail,
-          displayName: cleanName,
-          role: 'USER',
-          status: 'ACTIVE'
-        });
+        // Insert into activity logs with store_id context
+        await pool.query(`
+          INSERT INTO activity_logs (id, action, performed_by, store_id)
+          VALUES ($1, $2, $3, $4);
+        `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account via Google: "${cleanName}" (${cleanEmail}) - Awaiting approval`, cleanEmail, storeId]);
+
+        // Insert alert notification targeting the Super Admin's tray
+        const notifId = 'notif_auto_' + Math.random().toString(36).substring(2, 11);
+        await pool.query(`
+          INSERT INTO notifications (id, message, type, user_email, store_id)
+          VALUES ($1, $2, 'info', $3, $4)
+          ON CONFLICT DO NOTHING;
+        `, [
+          notifId,
+          `Personnel registration request: "${cleanName}" (${cleanEmail}) is awaiting Super Admin approval.`,
+          superAdminEmail,
+          storeId
+        ]);
+
+        return res.status(403).json({ error: 'Konti yafunguwe neza! Tegereza iremizwa rya Super Admin. / Account registered successfully! Awaiting Super Admin approval.' });
       }
 
       const dbUser = userRes.rows[0];
+      if (dbUser.status === 'PENDING') {
+        return res.status(403).json({ error: 'Your access request is currently PENDING Super Admin approval.' });
+      }
       if (dbUser.status === 'REJECTED') {
         return res.status(403).json({ error: 'Your access has been REJECTED by Super Admin.' });
       }
@@ -1026,12 +1149,13 @@ app.use(express.json());
         return res.status(403).json({ error: 'Your access has been SUSPENDED by Super Admin.' });
       }
 
-      // Automatically promote pending accounts back to ACTIVE because Google OAuth verifies they own the account!
-      if (dbUser.status === 'PENDING') {
-        await pool.query("UPDATE users SET status = 'ACTIVE' WHERE email = $1;", [cleanEmail]);
-        dbUser.status = 'ACTIVE';
-      }
-
+      const token = jwt.sign({ email: cleanEmail }, JWT_SECRET, { expiresIn: '7d' });
+      res.cookie('stockwise_session', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000
+      });
       res.json({
         allowed: true,
         email: cleanEmail,
@@ -1045,50 +1169,170 @@ app.use(express.json());
     }
   });
 
+  // GET /api/auth/me - Dynamic session fetcher
+  app.get('/api/auth/me', async (req, res) => {
+    try {
+      const token = req.cookies?.stockwise_session;
+      if (!token) {
+        return res.json({ authenticated: false });
+      }
+
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch (jwtErr) {
+        return res.json({ authenticated: false });
+      }
+
+      const email = decoded?.email;
+      if (!email) {
+        return res.json({ authenticated: false });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const userRes = await pool.query('SELECT id, full_name as "fullName", email, role, status FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        if (cleanEmail === superAdminEmail) {
+          return res.json({
+            authenticated: true,
+            user: {
+              id: 'super_admin_id',
+              email: cleanEmail,
+              displayName: 'Super Admin',
+              role: 'SUPER_ADMIN',
+              status: 'ACTIVE'
+            }
+          });
+        }
+        return res.json({ authenticated: false });
+      }
+
+      const dbUser = userRes.rows[0];
+      return res.json({
+        authenticated: true,
+        user: {
+          id: dbUser.id,
+          email: dbUser.email,
+          displayName: dbUser.fullName,
+          role: dbUser.role,
+          status: dbUser.status
+        }
+      });
+    } catch (err: any) {
+      console.error('[auth/me error]', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // POST/GET /api/auth/logout - Clear active session cookie
+  app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('stockwise_session', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+    res.json({ success: true });
+  });
+  app.get('/api/auth/logout', (req, res) => {
+    res.clearCookie('stockwise_session', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+    res.json({ success: true });
+  });
+
+  // Generic Role-Based Access Control (RBAC) middleware creator
+  const requireRole = (allowedRoles: string[]) => {
+    return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (!req.userRole) {
+        return res.status(401).json({ error: 'Unauthenticated.' });
+      }
+      
+      const refinedRole = req.userRole === 'ADMIN' ? 'STORE_MANAGER' : req.userRole;
+      const refinedAllowed = allowedRoles.map(r => r === 'ADMIN' ? 'STORE_MANAGER' : r);
+      
+      if (allowedRoles.includes(req.userRole) || refinedAllowed.includes(refinedRole)) {
+        return next();
+      }
+      return res.status(403).json({ error: `Access denied. Requires one of these roles: ${allowedRoles.join(', ')}` });
+    };
+  };
+
   // Middleware to retrieve authenticated user email and enforce authorization policies
   const requireUser = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
-      const email = req.headers['x-user-email'] as string;
-      let cleanEmail = '';
-      if (!email) {
-        if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
-          return res.status(401).json({ error: 'Unauthenticated. Header x-user-email is missing.' });
-        }
-        // Fallback for seamless local sandbox and developer workspace previews
-        cleanEmail = 'alieluzii@gmail.com';
-      } else {
-        cleanEmail = email.trim().toLowerCase();
+      const token = req.cookies?.stockwise_session;
+      if (!token) {
+        return res.status(401).json({ error: 'Unauthenticated. Session cookie is missing.' });
       }
 
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch (jwtErr) {
+        return res.status(401).json({ error: 'Invalid or expired session. Please log in again.' });
+      }
+
+      const email = decoded?.email;
+      if (!email) {
+        return res.status(401).json({ error: 'Invalid session payload.' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
       req.userEmail = cleanEmail;
 
-      // Handle query status in Postgres
-      const userRes = await pool.query('SELECT role, status FROM users WHERE email = $1;', [cleanEmail]);
+      // Handle query status in Postgres, fetching role AND status AND store_id
+      const userRes = await pool.query('SELECT role, status, store_id, id, full_name FROM users WHERE email = $1;', [cleanEmail]);
       if (userRes.rows.length === 0) {
         const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
         if (cleanEmail === superAdminEmail) {
           req.userRole = 'SUPER_ADMIN';
+          req.userStoreId = 'super_admin_store'; // global access context
           return next();
         }
 
-        // New client automatically captured in database as 'PENDING'
+        // New user automatically captured in database as 'PENDING'
         const userId = 'user_auto_' + Math.random().toString(36).substring(2, 11);
+        
+        // Resolve domain mapping to assign/create store_id dynamically on self-registration
+        const domain = cleanEmail.split('@')[1];
+        const genericDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'mail.com', 'protonmail.com', 'zoho.com', 'yandex.com'];
+        let storeId = '';
+        if (!genericDomains.includes(domain)) {
+          const domainOwner = await pool.query(`SELECT store_id FROM users WHERE email LIKE $1 AND store_id IS NOT NULL LIMIT 1;`, [`%@${domain}`]);
+          if (domainOwner.rows.length > 0) {
+            storeId = domainOwner.rows[0].store_id;
+          }
+        }
+        
+        if (!storeId) {
+          storeId = 'store_' + Math.random().toString(36).substring(2, 11);
+          const storeName = !genericDomains.includes(domain) 
+            ? domain.split('.')[0].toUpperCase() + ' Store'
+            : cleanEmail.split('@')[0] + "'s Store";
+            
+          await pool.query(`INSERT INTO stores (id, name, owner_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`, [storeId, storeName, userId]);
+        }
+
         await pool.query(`
-          INSERT INTO users (id, full_name, email, role, status)
-          VALUES ($1, $2, $3, 'USER', 'PENDING')
+          INSERT INTO users (id, full_name, email, role, status, store_id)
+          VALUES ($1, $2, $3, 'USER', 'PENDING', $4)
           ON CONFLICT (email) DO NOTHING;
-        `, [userId, cleanEmail.split('@')[0], cleanEmail]);
+        `, [userId, cleanEmail.split('@')[0], cleanEmail, storeId]);
 
         // Insert alarm notification targeting the Super Admin's incoming tray
         const notifId = 'notif_auto_' + Math.random().toString(36).substring(2, 11);
         await pool.query(`
-          INSERT INTO notifications (id, message, type, user_email)
-          VALUES ($1, $2, 'info', $3)
+          INSERT INTO notifications (id, message, type, user_email, store_id)
+          VALUES ($1, $2, 'info', $3, $4)
           ON CONFLICT DO NOTHING;
         `, [
           notifId,
           `Personnel registration request: "${cleanEmail.split('@')[0]}" (${cleanEmail}) is awaiting Super Admin approval.`,
-          superAdminEmail
+          superAdminEmail,
+          storeId
         ]);
 
         return res.status(403).json({ error: 'Account awaiting Super Admin approval', status: 'PENDING' });
@@ -1096,6 +1340,32 @@ app.use(express.json());
 
       const dbUser = userRes.rows[0];
       req.userRole = dbUser.role;
+      req.userStoreId = dbUser.store_id;
+
+      // Self-heal store_id if missing from active user row
+      if (!req.userStoreId && req.userRole !== 'SUPER_ADMIN') {
+        const domain = cleanEmail.split('@')[1];
+        const genericDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'mail.com', 'protonmail.com', 'zoho.com', 'yandex.com'];
+        let storeId = '';
+        if (!genericDomains.includes(domain)) {
+          const domainOwner = await pool.query(`SELECT store_id FROM users WHERE email LIKE $1 AND store_id IS NOT NULL AND id != $2 LIMIT 1;`, [`%@${domain}`, dbUser.id]);
+          if (domainOwner.rows.length > 0) {
+            storeId = domainOwner.rows[0].store_id;
+          }
+        }
+        
+        if (!storeId) {
+          storeId = 'store_' + Math.random().toString(36).substring(2, 11);
+          const storeName = !genericDomains.includes(domain) 
+            ? domain.split('.')[0].toUpperCase() + ' Store'
+            : cleanEmail.split('@')[0] + "'s Store";
+            
+          await pool.query(`INSERT INTO stores (id, name, owner_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING;`, [storeId, storeName, dbUser.id]);
+        }
+        
+        await pool.query(`UPDATE users SET store_id = $1 WHERE id = $2;`, [storeId, dbUser.id]);
+        req.userStoreId = storeId;
+      }
 
       if (dbUser.status === 'PENDING') {
         return res.status(403).json({ error: 'Account awaiting Super Admin approval', status: 'PENDING' });
@@ -1187,12 +1457,42 @@ app.use(express.json());
     }
   });
 
+  // DELETE /api/super-admin/users/:id - Permanent removal of users or requests
+  app.delete('/api/super-admin/users/:id', requireUser, requireSuperAdmin, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      const userCheck = await pool.query('SELECT full_name, email FROM users WHERE id = $1;', [id]);
+      if (userCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'User does not exist.' });
+      }
+      const dbUser = userCheck.rows[0];
+
+      if (dbUser.email === req.userEmail) {
+        return res.status(400).json({ error: 'Super Admin cannot delete their own profile.' });
+      }
+
+      await pool.query('DELETE FROM users WHERE id = $1;', [id]);
+
+      // Audit Log Action record
+      const actionMsg = `Admin action: Permanently deleted user "${dbUser.full_name}" (${dbUser.email}).`;
+      await pool.query(`
+        INSERT INTO activity_logs (id, action, performed_by)
+        VALUES ($1, $2, $3);
+      `, ['log_sa_act_' + Math.random().toString(36).substring(2, 11), actionMsg, req.userEmail]);
+
+      res.json({ success: true, message: `User "${dbUser.full_name}" has been permanently deleted.` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // --- RESTful API Service Endpoints ---
 
   // GET /api/products
   app.get('/api/products', requireUser, async (req, res) => {
     try {
-      const q = `
+      let q = `
         SELECT p.id, p.name, p.description, p.product_code as "productCode",
                COALESCE(s.quantity, 0)::int as quantity,
                p.purchase_price::float as "purchasePrice",
@@ -1203,10 +1503,15 @@ app.use(express.json());
                p.updated_at as "updatedAt"
         FROM products p
         LEFT JOIN inventory_stock s ON p.id = s.product_id
-        WHERE p.created_by = $1
-        ORDER BY p.name ASC;
       `;
-      const result = await pool.query(q, [req.userEmail]);
+      const params = [];
+      if (req.userRole !== 'SUPER_ADMIN') {
+        q += ' WHERE p.store_id = $1 ';
+        params.push(req.userStoreId);
+      }
+      q += ' ORDER BY p.name ASC;';
+      
+      const result = await pool.query(q, params);
       res.json(result.rows);
     } catch (err: any) {
       console.error(err);
@@ -1223,11 +1528,11 @@ app.use(express.json());
       const productId = 'prod_' + Math.random().toString(36).substring(2, 11);
       const productCode = 'SW-' + Math.floor(100000 + Math.random() * 900000);
 
-      // Insert core details
+      // Insert core details with store_id context
       await client.query(
-        `INSERT INTO products (id, name, product_code, description, purchase_price, selling_price, min_stock, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
-        [productId, name, productCode, description || '', purchasePrice || 0, sellingPrice || 0, minStock || 0, req.userEmail]
+        `INSERT INTO products (id, name, product_code, description, purchase_price, selling_price, min_stock, created_by, store_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+        [productId, name, productCode, description || '', purchasePrice || 0, sellingPrice || 0, minStock || 0, req.userEmail, req.userStoreId]
       );
 
       // Insert initial stock relation (3NF separation)
@@ -1237,11 +1542,11 @@ app.use(express.json());
         ['stock_' + productId, productId, quantity || 0]
       );
 
-      // Store in audit logs
+      // Store in audit logs with store_id context
       await client.query(
-        `INSERT INTO activity_logs (id, action, performed_by)
-         VALUES ($1, $2, $3);`,
-        ['log_' + productId, `Added product "${name}" with initial stock of ${quantity}`, req.userEmail]
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + productId, `Added product "${name}" with initial stock of ${quantity}`, req.userEmail, req.userStoreId]
       );
 
       await client.query('COMMIT');
@@ -1263,7 +1568,7 @@ app.use(express.json());
     try {
       await client.query('BEGIN');
 
-      const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND created_by = $2;', [id, req.userEmail]);
+      const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
       if (isOwner.rows.length === 0) {
         return res.status(403).json({ error: 'Unauthorized product modification' });
       }
@@ -1271,14 +1576,14 @@ app.use(express.json());
       await client.query(
         `UPDATE products 
          SET name = $1, description = $2, min_stock = $3, purchase_price = $4, selling_price = $5, updated_at = NOW()
-         WHERE id = $6;`,
-        [name, description || '', minStock || 0, purchasePrice || 0, sellingPrice || 0, id]
+         WHERE id = $6 AND store_id = $7;`,
+        [name, description || '', minStock || 0, purchasePrice || 0, sellingPrice || 0, id, req.userStoreId]
       );
 
       await client.query(
-        `INSERT INTO activity_logs (id, action, performed_by)
-         VALUES ($1, $2, $3);`,
-        ['log_' + Math.random().toString(36).substring(2, 11), `Updated details of product "${isOwner.rows[0].name}"`, req.userEmail]
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + Math.random().toString(36).substring(2, 11), `Updated details of product "${isOwner.rows[0].name}"`, req.userEmail, req.userStoreId]
       );
 
       await client.query('COMMIT');
@@ -1299,17 +1604,17 @@ app.use(express.json());
     try {
       await client.query('BEGIN');
 
-      const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND created_by = $2;', [id, req.userEmail]);
+      const isOwner = await client.query('SELECT name FROM products WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
       if (isOwner.rows.length === 0) {
         return res.status(403).json({ error: 'Unauthorized product modification' });
       }
 
-      await client.query('DELETE FROM products WHERE id = $1;', [id]);
+      await client.query('DELETE FROM products WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
 
       await client.query(
-        `INSERT INTO activity_logs (id, action, performed_by)
-         VALUES ($1, $2, $3);`,
-        ['log_' + Math.random().toString(36).substring(2, 11), `Deleted product "${isOwner.rows[0].name}"`, req.userEmail]
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + Math.random().toString(36).substring(2, 11), `Deleted product "${isOwner.rows[0].name}"`, req.userEmail, req.userStoreId]
       );
 
       await client.query('COMMIT');
@@ -1326,16 +1631,21 @@ app.use(express.json());
   // GET /api/stock-ins
   app.get('/api/stock-ins', requireUser, async (req, res) => {
     try {
-      const q = `
+      let q = `
         SELECT s.id, s.product_id as "productId", s.product_name as "productName",
                s.quantity::int, s.supplier, s.notes, s.performed_by as "performedBy",
                s.purchase_price::float as "purchasePrice",
                s.created_at as "createdAt"
         FROM stock_ins s
-        WHERE s.performed_by = $1
-        ORDER BY s.created_at DESC;
       `;
-      const result = await pool.query(q, [req.userEmail]);
+      const params = [];
+      if (req.userRole !== 'SUPER_ADMIN') {
+        q += ' WHERE s.store_id = $1 ';
+        params.push(req.userStoreId);
+      }
+      q += ' ORDER BY s.created_at DESC;';
+
+      const result = await pool.query(q, params);
       res.json(result.rows);
     } catch (err: any) {
       console.error(err);
@@ -1350,7 +1660,7 @@ app.use(express.json());
     try {
       await client.query('BEGIN');
 
-      const prod = await client.query('SELECT name, purchase_price FROM products WHERE id = $1 AND created_by = $2;', [productId, req.userEmail]);
+      const prod = await client.query('SELECT name, purchase_price FROM products WHERE id = $1 AND store_id = $2;', [productId, req.userStoreId]);
       if (prod.rows.length === 0) {
         return res.status(404).json({ error: 'Product not found or access denied' });
       }
@@ -1364,7 +1674,7 @@ app.use(express.json());
         `UPDATE inventory_stock 
          SET quantity = quantity + $1, updated_at = NOW()
          WHERE product_id = $2;`,
-        [quantity, productId]
+         [quantity, productId]
       );
 
       // Determine active purchase price. Use supplied purchasePrice, falling back to product's current one
@@ -1374,22 +1684,22 @@ app.use(express.json());
       await client.query(
         `UPDATE products 
          SET purchase_price = $1, updated_at = NOW()
-         WHERE id = $2 AND created_by = $3;`,
-        [activePurchasePrice, productId, req.userEmail]
+         WHERE id = $2 AND store_id = $3;`,
+        [activePurchasePrice, productId, req.userStoreId]
       );
 
-      // Record Stock In Transaction
+      // Record Stock In Transaction with store_id context
       await client.query(
-        `INSERT INTO stock_ins (id, product_id, product_name, quantity, supplier, notes, purchase_price, performed_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
-        [stockInId, productId, prodName, quantity, supplier || '', notes || '', activePurchasePrice, req.userEmail]
+        `INSERT INTO stock_ins (id, product_id, product_name, quantity, supplier, notes, purchase_price, performed_by, store_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+        [stockInId, productId, prodName, quantity, supplier || '', notes || '', activePurchasePrice, req.userEmail, req.userStoreId]
       );
 
-      // Record in logs
+      // Record in logs with store_id context
       await client.query(
-        `INSERT INTO activity_logs (id, action, performed_by)
-         VALUES ($1, $2, $3);`,
-        ['log_' + Math.random().toString(36).substring(2, 11), `Restocked ${quantity} units of "${prodName}" (Purchase Price: ${activePurchasePrice} RWF)`, req.userEmail]
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + Math.random().toString(36).substring(2, 11), `Restocked ${quantity} units of "${prodName}" (Purchase Price: ${activePurchasePrice} RWF)`, req.userEmail, req.userStoreId]
       );
 
       await client.query('COMMIT');
@@ -1406,7 +1716,7 @@ app.use(express.json());
   // GET /api/sales
   app.get('/api/sales', requireUser, async (req, res) => {
     try {
-      const q = `
+      let q = `
         SELECT s.id, si.product_id as "productId", p.name as "productName",
                si.quantity::int as quantity, si.price::float as "unitPrice", 
                (si.quantity * si.price)::float as "totalPrice",
@@ -1414,10 +1724,15 @@ app.use(express.json());
         FROM sales s
         JOIN sales_items si ON s.id = si.sale_id
         JOIN products p ON si.product_id = p.id
-        WHERE s.performed_by = $1
-        ORDER BY s.created_at DESC;
       `;
-      const result = await pool.query(q, [req.userEmail]);
+      const params = [];
+      if (req.userRole !== 'SUPER_ADMIN') {
+        q += ' WHERE s.store_id = $1 ';
+        params.push(req.userStoreId);
+      }
+      q += ' ORDER BY s.created_at DESC;';
+
+      const result = await pool.query(q, params);
       res.json(result.rows);
     } catch (err: any) {
       console.error(err);
@@ -1437,12 +1752,12 @@ app.use(express.json());
         `SELECT p.name, p.selling_price, p.min_stock, COALESCE(s.quantity, 0) as stock 
          FROM products p
          LEFT JOIN inventory_stock s ON p.id = s.product_id
-         WHERE p.id = $1 AND p.created_by = $2;`,
-        [productId, req.userEmail]
+         WHERE p.id = $1 AND p.store_id = $2;`,
+        [productId, req.userStoreId]
       );
 
       if (prodRes.rows.length === 0) {
-        return res.status(404).json({ error: 'Product not found' });
+        return res.status(404).json({ error: 'Product not found or access denied' });
       }
 
       const product = prodRes.rows[0];
@@ -1466,9 +1781,9 @@ app.use(express.json());
 
       // 2. Insert Sale Parent
       await client.query(
-        `INSERT INTO sales (id, performed_by, total_amount)
-         VALUES ($1, $2, $3);`,
-        [saleId, req.userEmail, totalPrice]
+        `INSERT INTO sales (id, performed_by, total_amount, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        [saleId, req.userEmail, totalPrice, req.userStoreId]
       );
 
       // 3. Insert Sale Item Detail
@@ -1480,9 +1795,9 @@ app.use(express.json());
 
       // 4. Activity log
       await client.query(
-        `INSERT INTO activity_logs (id, action, performed_by)
-         VALUES ($1, $2, $3);`,
-        ['log_' + Math.random().toString(36).substring(2, 11), `Sold ${quantity} units of "${product.name}" for a total of RWF ${Math.round(totalPrice).toLocaleString()}`, req.userEmail]
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + Math.random().toString(36).substring(2, 11), `Sold ${quantity} units of "${product.name}" for a total of RWF ${Math.round(totalPrice).toLocaleString()}`, req.userEmail, req.userStoreId]
       );
 
       // 5. Build dynamic alerts trigger inside notifications if goes low_stock
@@ -1490,9 +1805,9 @@ app.use(express.json());
         const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
         const warningMsg = `"${product.name}" is running low (${newQty} left). Please restock soon!`;
         await client.query(
-          `INSERT INTO notifications (id, product_id, message, type, is_read, user_email)
-           VALUES ($1, $2, $3, 'low_stock', FALSE, $4);`,
-          [notifId, productId, warningMsg, req.userEmail]
+          `INSERT INTO notifications (id, product_id, message, type, is_read, user_email, store_id)
+           VALUES ($1, $2, $3, 'low_stock', FALSE, $4, $5);`,
+          [notifId, productId, warningMsg, req.userEmail, req.userStoreId]
         );
       }
 
@@ -1510,14 +1825,25 @@ app.use(express.json());
   // GET /api/notifications
   app.get('/api/notifications', requireUser, async (req, res) => {
     try {
-      const q = `
-        SELECT id, message, type, is_read as "isRead", 
-               user_email as "userEmail", created_at as "createdAt"
-        FROM notifications
-        WHERE user_email = $1
-        ORDER BY created_at DESC;
-      `;
-      const result = await pool.query(q, [req.userEmail]);
+      let result;
+      if (req.userRole === 'SUPER_ADMIN') {
+        const q = `
+          SELECT id, message, type, is_read as "isRead", 
+                 user_email as "userEmail", created_at as "createdAt"
+          FROM notifications
+          ORDER BY created_at DESC;
+        `;
+        result = await pool.query(q);
+      } else {
+        const q = `
+          SELECT id, message, type, is_read as "isRead", 
+                 user_email as "userEmail", created_at as "createdAt"
+          FROM notifications
+          WHERE store_id = $1
+          ORDER BY created_at DESC;
+        `;
+        result = await pool.query(q, [req.userStoreId]);
+      }
       res.json(result.rows);
     } catch (err: any) {
       console.error(err);
@@ -1529,7 +1855,11 @@ app.use(express.json());
   app.put('/api/notifications/:id/read', requireUser, async (req, res) => {
     const { id } = req.params;
     try {
-      await pool.query('UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_email = $2;', [id, req.userEmail]);
+      if (req.userRole === 'SUPER_ADMIN') {
+        await pool.query('UPDATE notifications SET is_read = TRUE WHERE id = $1;', [id]);
+      } else {
+        await pool.query('UPDATE notifications SET is_read = TRUE WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
+      }
       res.json({ success: true });
     } catch (err: any) {
       console.error(err);
@@ -1541,7 +1871,11 @@ app.use(express.json());
   app.delete('/api/notifications/:id', requireUser, async (req, res) => {
     const { id } = req.params;
     try {
-      await pool.query('DELETE FROM notifications WHERE id = $1 AND user_email = $2;', [id, req.userEmail]);
+      if (req.userRole === 'SUPER_ADMIN') {
+        await pool.query('DELETE FROM notifications WHERE id = $1;', [id]);
+      } else {
+        await pool.query('DELETE FROM notifications WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
+      }
       res.json({ success: true });
     } catch (err: any) {
       console.error(err);
@@ -1552,13 +1886,18 @@ app.use(express.json());
   // GET /api/activity-logs
   app.get('/api/activity-logs', requireUser, async (req, res) => {
     try {
-      const q = `
+      let q = `
         SELECT id, action, performed_by as "performedBy", created_at as "createdAt"
         FROM activity_logs
-        WHERE performed_by = $1
-        ORDER BY created_at DESC;
       `;
-      const result = await pool.query(q, [req.userEmail]);
+      const params = [];
+      if (req.userRole !== 'SUPER_ADMIN') {
+        q += ' WHERE store_id = $1 ';
+        params.push(req.userStoreId);
+      }
+      q += ' ORDER BY created_at DESC;';
+
+      const result = await pool.query(q, params);
       res.json(result.rows);
     } catch (err: any) {
       console.error(err);

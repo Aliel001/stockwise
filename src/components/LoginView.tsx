@@ -18,9 +18,9 @@ function isRealEmailLocal(email: string): { isValid: boolean; reason: string } {
 
 export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [step, setStep] = useState<'details' | 'verify'>('details');
-  const [email, setEmail] = useState('alieluzii@gmail.com');
-  const [name, setName] = useState('Ali Eluzii');
-  const [phone, setPhone] = useState('+250 788 123 456');
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [code, setCode] = useState('');

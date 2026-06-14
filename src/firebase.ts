@@ -14,14 +14,40 @@ export interface LocalUser {
 type AuthListener = (user: LocalUser | null) => void;
 const authListeners = new Set<AuthListener>();
 
-let currentUser: LocalUser | null = (() => {
-  try {
-    const saved = localStorage.getItem('stockwise_user');
-    return saved ? JSON.parse(saved) : null;
-  } catch {
-    return null;
+let currentUser: LocalUser | null = null;
+let isMeLoaded = false;
+let mePromise: Promise<LocalUser | null> | null = null;
+
+async function getMe(): Promise<LocalUser | null> {
+  if (isMeLoaded) return currentUser;
+  if (!mePromise) {
+    mePromise = fetch('/api/auth/me')
+      .then(res => res.ok ? res.json() : { authenticated: false })
+      .then(data => {
+        isMeLoaded = true;
+        if (data.authenticated && data.user) {
+          currentUser = {
+            uid: data.user.id || 'user_g_' + Math.random().toString(36).substring(2, 11),
+            email: data.user.email,
+            displayName: data.user.displayName,
+            photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.user.displayName || '')}`,
+            role: data.user.role,
+            status: data.user.status,
+          };
+        } else {
+          currentUser = null;
+        }
+        return currentUser;
+      })
+      .catch((err) => {
+        console.error('[auth/me check failed]', err);
+        isMeLoaded = true;
+        currentUser = null;
+        return null;
+      });
   }
-})();
+  return mePromise;
+}
 
 export const auth = {
   get currentUser() {
@@ -31,8 +57,10 @@ export const auth = {
 
 export function onAuthStateChanged(authInstance: any, callback: AuthListener) {
   authListeners.add(callback);
-  // Emit state to listener immediately on subscription
-  callback(currentUser);
+  // Fetch from session cookie on initialization
+  getMe().then(user => {
+    callback(user);
+  });
   return () => {
     authListeners.delete(callback);
   };
@@ -97,15 +125,22 @@ export async function verifyCodeAndLogin(email: string, name: string, code: stri
 
   const data = await response.json();
 
+  if (data.isPending) {
+    throw new Error(data.message || 'Account awaiting Super Admin approval.');
+  }
+
   const newUser: LocalUser = {
     uid: 'user_' + Math.random().toString(36).substring(2, 11),
     email: data.email,
     displayName: data.displayName,
-    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.displayName)}`
+    photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(data.displayName)}`,
+    role: data.role,
+    status: data.status
   };
 
   currentUser = newUser;
-  localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  isMeLoaded = true;
+  mePromise = Promise.resolve(newUser);
 
   // Dispatch auth state update to all subscribers
   for (const listener of authListeners) {
@@ -162,7 +197,8 @@ export async function signInWithEmailAndName(email: string, name: string) {
   };
 
   currentUser = newUser;
-  localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  isMeLoaded = true;
+  mePromise = Promise.resolve(newUser);
 
   for (const listener of authListeners) {
     listener(newUser);
@@ -204,7 +240,8 @@ export async function signInWithPassword(email: string, password: string) {
   };
 
   currentUser = newUser;
-  localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  isMeLoaded = true;
+  mePromise = Promise.resolve(newUser);
 
   for (const listener of authListeners) {
     listener(newUser);
@@ -214,7 +251,15 @@ export async function signInWithPassword(email: string, password: string) {
 
 export async function logOut() {
   currentUser = null;
-  localStorage.removeItem('stockwise_user');
+  isMeLoaded = true;
+  mePromise = Promise.resolve(null);
+
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  } catch (err) {
+    console.error('Backend logout request failed', err);
+  }
+
   for (const listener of authListeners) {
     listener(null);
   }
@@ -257,7 +302,8 @@ export async function signInWithGoogle(email: string, name: string): Promise<Loc
         
         const googleUser: LocalUser = event.data.user;
         currentUser = googleUser;
-        localStorage.setItem('stockwise_user', JSON.stringify(googleUser));
+        isMeLoaded = true;
+        mePromise = Promise.resolve(googleUser);
         
         for (const listener of authListeners) {
           listener(googleUser);

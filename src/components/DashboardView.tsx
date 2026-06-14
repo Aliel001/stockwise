@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Product, Sale, Page } from '../types';
 import { 
   Package, 
@@ -11,9 +11,15 @@ import {
   Bell,
   Database,
   Trash2,
-  ShieldAlert
+  ShieldAlert,
+  Users,
+  UserCheck,
+  Shield,
+  Activity,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { LocalUser } from '../firebase';
 import { safeGetDate, safeGetISOString } from '../utils/date';
 import { clearAllData } from '../services/db';
 import {
@@ -65,14 +71,51 @@ interface DashboardViewProps {
   sales: Sale[];
   notificationsCount: number;
   onNavigate: (page: Page) => void;
+  currentUser?: LocalUser | null;
 }
 
-export default function DashboardView({ products, sales, notificationsCount, onNavigate }: DashboardViewProps) {
+export default function DashboardView({ products, sales, notificationsCount, onNavigate, currentUser }: DashboardViewProps) {
   // Database maintenance state
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [purgeInput, setPurgeInput] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+
+  // Super Admin specific state
+  interface AdminStats {
+    totalUsers: number;
+    activeUsers: number;
+    pendingUsers: number;
+    rejectedUsers: number;
+    suspendedUsers: number;
+  }
+  const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+
+  useEffect(() => {
+    if (currentUser?.role !== 'SUPER_ADMIN') return;
+    
+    const fetchAdminStats = async () => {
+      try {
+        setAdminLoading(true);
+        const res = await fetch('/api/super-admin/stats', {
+          headers: {
+            'x-user-email': currentUser.email || '',
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAdminStats(data);
+        }
+      } catch (err) {
+        console.error('Error fetching admin stats:', err);
+      } finally {
+        setAdminLoading(false);
+      }
+    };
+
+    fetchAdminStats();
+  }, [currentUser]);
 
   // Stats Calculations
   const stats = useMemo(() => {
@@ -244,7 +287,7 @@ export default function DashboardView({ products, sales, notificationsCount, onN
   }, [timeframe, sevenDaysData, monthlyData, yearsData]);
 
   const handlePurgeAllData = async () => {
-    if (purgeInput !== 'PURGE') return;
+    if (purgeInput !== 'PURGE' && purgeInput !== 'STOCKWISE SECURE PURGE') return;
     setResetLoading(true);
     setResetError(null);
     try {
@@ -257,6 +300,271 @@ export default function DashboardView({ products, sales, notificationsCount, onN
       setResetLoading(false);
     }
   };
+
+  if (currentUser?.role === 'SUPER_ADMIN') {
+    return (
+      <div className="space-y-6">
+        {/* Welcome Bar */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-sans">
+              System Admin Control Center
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Real-time user authorization, security auditing logs, and general system status configurations.
+            </p>
+          </div>
+          
+          {adminStats && adminStats.pendingUsers > 0 && (
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="flex items-center space-x-2 px-4 py-2 bg-indigo-50 border border-indigo-250 text-indigo-800 rounded-xl text-xs font-semibold cursor-pointer select-none"
+              onClick={() => onNavigate(Page.SuperAdmin)}
+            >
+              <Users className="w-4 h-4 text-indigo-600 animate-pulse" />
+              <span>{adminStats.pendingUsers} enrollment request{adminStats.pendingUsers !== 1 ? 's' : ''} awaiting approval!</span>
+              <ArrowRight className="w-3.5 h-3.5 text-indigo-600 ml-1" />
+            </motion.div>
+          )}
+        </div>
+
+        {/* Primary Counters - Bento Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          
+          {/* Total Registered Users */}
+          <div className="bg-white rounded-xl p-5 border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
+            <div>
+              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider font-sans">Registered Users</span>
+              <span className="text-3xl font-extrabold text-slate-800 mt-1 block font-sans">
+                {adminStats ? adminStats.totalUsers : '...'}
+              </span>
+              <button 
+                onClick={() => onNavigate(Page.SuperAdmin)}
+                className="mt-3 text-xs font-semibold text-indigo-650 flex items-center hover:text-indigo-800 transition-colors"
+              >
+                <span>Manage Users</span>
+                <ArrowRight className="w-3.5 h-3.5 ml-1" />
+              </button>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-xl text-slate-500">
+              <Users className="w-6 h-6" />
+            </div>
+          </div>
+
+          {/* Pending Approvals */}
+          <div className="bg-white rounded-xl p-5 border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
+            <div>
+              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider font-sans">Awaiting Approvals</span>
+              <span className={`text-3xl font-extrabold mt-1 block font-sans ${adminStats && adminStats.pendingUsers > 0 ? 'text-amber-500 font-bold' : 'text-slate-800'}`}>
+                {adminStats ? adminStats.pendingUsers : '...'}
+              </span>
+              <span className="text-[10px] text-slate-400 block mt-3">Requires prompt review</span>
+            </div>
+            <div className="p-3 bg-amber-50 rounded-xl text-amber-600">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+          </div>
+
+          {/* Active Members */}
+          <div className="bg-white rounded-xl p-5 border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
+            <div>
+              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider font-sans">Active Accounts</span>
+              <span className="text-3xl font-extrabold text-emerald-600 mt-1 block font-sans">
+                {adminStats ? adminStats.activeUsers : '...'}
+              </span>
+              <span className="text-[10px] text-slate-400 block mt-3">Authorized specialists</span>
+            </div>
+            <div className="p-3 bg-emerald-50 rounded-xl text-emerald-600">
+              <UserCheck className="w-6 h-6" />
+            </div>
+          </div>
+
+          {/* Blocked or Suspended Accounts */}
+          <div className="bg-white rounded-xl p-5 border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-md transition-shadow">
+            <div>
+              <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider font-sans">Suspended & Rejected</span>
+              <span className="text-3xl font-extrabold text-rose-600 mt-1 block font-sans font-sans">
+                {adminStats ? (adminStats.rejectedUsers + adminStats.suspendedUsers) : '...'}
+              </span>
+              <span className="text-[10px] text-slate-400 mt-3 block font-semibold">Access restricted</span>
+            </div>
+            <div className="p-3 bg-rose-50 rounded-xl text-rose-600">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+          </div>
+
+        </div>
+
+        {/* Lower body grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* Quick Access Actions */}
+          <div className="bg-white rounded-xl p-6 border border-slate-100 shadow-sm flex flex-col justify-between">
+            <div>
+              <div className="flex items-center space-x-3 mb-4">
+                <div className="p-2 bg-indigo-50 text-indigo-700 rounded-lg">
+                  <Shield className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 font-sans">System Management</h3>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Quick access shortcuts</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+                As the Super Admin, you are responsible for monitoring platform access. Review enrollment alerts and verify personnel identities before approving their credentials.
+              </p>
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={() => onNavigate(Page.SuperAdmin)}
+                className="w-full text-center px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer block"
+              >
+                Go to Access System Panel
+              </button>
+              <button
+                onClick={() => onNavigate(Page.ActivityLogs)}
+                className="w-full text-center px-4 py-2.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200/65 font-bold text-xs rounded-xl transition-colors cursor-pointer block"
+              >
+                Review Activity & Audit Logs
+              </button>
+            </div>
+          </div>
+
+          {/* System Notifications Quick Look Card */}
+          <div className="lg:col-span-2 bg-white rounded-xl p-6 border border-slate-100 shadow-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-indigo-50 text-indigo-700 rounded-lg">
+                  <Bell className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 font-sans">Active System Notifications & Alarms</h3>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Critical system indicators and enrollment requests</p>
+                </div>
+              </div>
+              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-650 text-[10px] font-bold rounded-lg border border-indigo-100">
+                {notificationsCount} Pending
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+              Access the Alerts panel to see low shelf quantity alerts from managers, or inspect registration reports submitted by prospective applicants.
+            </p>
+
+            <button
+              onClick={() => onNavigate(Page.Notifications)}
+              className="w-full text-center px-4 py-2.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-bold text-xs rounded-xl transition-colors cursor-pointer block"
+            >
+              Open Alerts & Notifications Page
+            </button>
+          </div>
+
+        </div>
+
+        {/* Database Maintenance Option */}
+        <div className="bg-white rounded-xl p-6 border border-slate-200/60 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start md:items-center space-x-3.5">
+            <div className="p-3 bg-rose-50 text-rose-600 rounded-xl shrink-0">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Database Maintenance</h3>
+              <p className="text-xs font-semibold text-slate-900 mt-0.5">Wipe & Clear System Inventory Data</p>
+              <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed max-w-xl">
+                Permanently purge all inserted products, stock-in history records, completed checkout sales, active alerts, and database logs from the system.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => {
+              setResetError(null);
+              setPurgeInput('');
+              setResetConfirmOpen(true);
+            }}
+            className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-bold rounded-xl border border-rose-200 transition-colors shadow-sm cursor-pointer select-none font-sans"
+          >
+            Purge Storage
+          </button>
+        </div>
+
+        {/* Database Reset Dialog Modal */}
+        <AnimatePresence>
+          {resetConfirmOpen && (
+            <>
+              <div 
+                className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 shadow-2xl"
+                onClick={() => !resetLoading && setResetConfirmOpen(false)}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-white rounded-2xl max-w-md w-full border border-slate-150 shadow-2xl p-6 text-slate-800 relative font-sans"
+                >
+                  <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4">
+                    <Trash2 className="w-6 h-6" />
+                  </div>
+
+                  <h3 className="text-base font-bold text-slate-900 tracking-tight font-sans">
+                    Are you absolutely sure?
+                  </h3>
+                  
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    This operation is <span className="font-bold text-rose-650">irreversible</span>. It will wipe all collections database-wide, leaving a fresh clean installation state.
+                  </p>
+
+                  <div className="mt-4 p-3 bg-rose-50/50 rounded-xl border border-rose-100">
+                    <p className="text-[10px] text-rose-800 font-bold leading-normal">
+                      To confirm deletion, please enter the pass-phrase <span className="underline select-all">"STOCKWISE SECURE PURGE"</span> in the box below:
+                    </p>
+                    
+                    <input 
+                      type="text" 
+                      placeholder='Type "STOCKWISE SECURE PURGE"...'
+                      value={purgeInput}
+                      onChange={(e) => setPurgeInput(e.target.value)}
+                      disabled={resetLoading}
+                      className="w-full mt-2.5 px-3 py-2 bg-white rounded-lg border border-rose-200/60 text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-rose-500/10 placeholder-rose-300"
+                    />
+                  </div>
+
+                  {resetError && (
+                    <div className="mt-3 p-2.5 bg-rose-100 text-rose-700 text-[10px] font-semibold rounded-lg leading-relaxed">
+                      {resetError}
+                    </div>
+                  )}
+
+                  <div className="mt-6 flex justify-end gap-2.5">
+                    <button
+                      type="button"
+                      disabled={resetLoading}
+                      onClick={() => setResetConfirmOpen(false)}
+                      className="px-3.5 py-2 hover:bg-slate-100 text-slate-600 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                    >
+                      Bypass Cancel
+                    </button>
+                    
+                    <button
+                      type="button"
+                      disabled={resetLoading || purgeInput !== "STOCKWISE SECURE PURGE"}
+                      onClick={handlePurgeAllData}
+                      className={`px-4 py-2 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center space-x-1 ${
+                        purgeInput === "STOCKWISE SECURE PURGE" && !resetLoading
+                          ? 'bg-rose-600 hover:bg-rose-700 cursor-pointer'
+                          : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                      }`}
+                    >
+                      {resetLoading ? 'Wiping Storage...' : 'Yes, Purge Data'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

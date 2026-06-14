@@ -119,6 +119,7 @@ export default function App() {
               sales={sales}
               notificationsCount={unreadNotificationsCount}
               onNavigate={setCurrentPage}
+              currentUser={currentUser}
             />
           )}
 

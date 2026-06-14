@@ -1,12 +1,10 @@
 import { auth } from '../firebase';
 import { Product, StockIn, Sale, Notification, ActivityLog } from '../types';
 
-// Helper to construct request headers with authenticated user details
+// Helper to construct request headers
 function getHeaders(emailOverride?: string) {
-  const email = emailOverride || auth.currentUser?.email || 'alieluzii@gmail.com';
   return {
-    'Content-Type': 'application/json',
-    'x-user-email': email
+    'Content-Type': 'application/json'
   };
 }
 
