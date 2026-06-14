@@ -383,6 +383,7 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
 
 const app = express();
 export { app };
+export default app;
 
 app.use(express.json());
 
