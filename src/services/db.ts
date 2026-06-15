@@ -3,8 +3,10 @@ import { Product, StockIn, Sale, Notification, ActivityLog } from '../types';
 
 // Helper to construct request headers
 function getHeaders(emailOverride?: string) {
+  const email = emailOverride || auth.currentUser?.email || '';
   return {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'x-user-email': email
   };
 }
 

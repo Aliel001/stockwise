@@ -34,16 +34,37 @@ async function getMe(): Promise<LocalUser | null> {
             role: data.user.role,
             status: data.user.status,
           };
+          try {
+            localStorage.setItem('stockwise_user', JSON.stringify(currentUser));
+          } catch (e) {}
         } else {
-          currentUser = null;
+          try {
+            const cached = localStorage.getItem('stockwise_user');
+            if (cached) {
+              currentUser = JSON.parse(cached);
+            } else {
+              currentUser = null;
+            }
+          } catch (e) {
+            currentUser = null;
+          }
         }
         return currentUser;
       })
       .catch((err) => {
         console.error('[auth/me check failed]', err);
         isMeLoaded = true;
-        currentUser = null;
-        return null;
+        try {
+          const cached = localStorage.getItem('stockwise_user');
+          if (cached) {
+            currentUser = JSON.parse(cached);
+          } else {
+            currentUser = null;
+          }
+        } catch (e) {
+          currentUser = null;
+        }
+        return currentUser;
       });
   }
   return mePromise;
@@ -141,6 +162,9 @@ export async function verifyCodeAndLogin(email: string, name: string, code: stri
   currentUser = newUser;
   isMeLoaded = true;
   mePromise = Promise.resolve(newUser);
+  try {
+    localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  } catch (e) {}
 
   // Dispatch auth state update to all subscribers
   for (const listener of authListeners) {
@@ -199,6 +223,9 @@ export async function signInWithEmailAndName(email: string, name: string) {
   currentUser = newUser;
   isMeLoaded = true;
   mePromise = Promise.resolve(newUser);
+  try {
+    localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  } catch (e) {}
 
   for (const listener of authListeners) {
     listener(newUser);
@@ -242,6 +269,9 @@ export async function signInWithPassword(email: string, password: string) {
   currentUser = newUser;
   isMeLoaded = true;
   mePromise = Promise.resolve(newUser);
+  try {
+    localStorage.setItem('stockwise_user', JSON.stringify(newUser));
+  } catch (e) {}
 
   for (const listener of authListeners) {
     listener(newUser);
@@ -253,6 +283,9 @@ export async function logOut() {
   currentUser = null;
   isMeLoaded = true;
   mePromise = Promise.resolve(null);
+  try {
+    localStorage.removeItem('stockwise_user');
+  } catch (e) {}
 
   try {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -304,6 +337,9 @@ export async function signInWithGoogle(email: string, name: string): Promise<Loc
         currentUser = googleUser;
         isMeLoaded = true;
         mePromise = Promise.resolve(googleUser);
+        try {
+          localStorage.setItem('stockwise_user', JSON.stringify(googleUser));
+        } catch (e) {}
         
         for (const listener of authListeners) {
           listener(googleUser);

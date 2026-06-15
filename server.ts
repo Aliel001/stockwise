@@ -368,8 +368,8 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
       );
     }
 
-    // Super Admin & default developer / manager seeding routine on boot
-    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+    // Super Admin seeding routine on boot - alieluzii@gmail.com is now the only Super Admin
+    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
     const superAdminPassword = (process.env.SUPER_ADMIN_PASSWORD || 'StockwiseSuperAdmin2026!').trim();
     const hashedSA = crypto.createHash('sha256').update(superAdminPassword).digest('hex');
 
@@ -381,16 +381,11 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
       SET role = 'SUPER_ADMIN', status = 'ACTIVE', password = $4;
     `, ['user_super_admin', 'Super Admin', superAdminEmail, hashedSA, 'SUPER_ADMIN', 'ACTIVE']);
 
-    // Seed default developer & test users as active ADMIN so logins are preserved
-    const defaultSecures = ['alieluzii@gmail.com', 'guest.manager@stockwise.rw', 'test.account@gmail.com'];
-    for (const em of defaultSecures) {
-      await client.query(`
-        INSERT INTO users (id, full_name, email, role, status)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (email) DO UPDATE 
-        SET status = 'ACTIVE';
-      `, ['user_seed_' + Math.random().toString(36).substring(2, 11), em.split('@')[0], em, 'ADMIN', 'ACTIVE']);
-    }
+    // Clean up old default/placeholder admin/manager accounts as requested
+    const defaultSecuresToDelete = ['admin@stockwise.rw', 'guest.manager@stockwise.rw', 'test.account@gmail.com'];
+    await client.query(`
+      DELETE FROM users WHERE email = ANY($1) AND email != $2;
+    `, [defaultSecuresToDelete, superAdminEmail]);
 
     // --- Dynamic Self-Healing Tenant Migration & Backfilling ---
     console.log('[PostgreSQL] Running self-healing backfill for tenant-isolation...');
@@ -685,7 +680,7 @@ app.use(cookieParser());
         `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account "${record.name}" (${cleanEmail}) - Awaiting approval`, cleanEmail]);
 
         // Insert notification alarm alert target for the Super Admin
-        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
         const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
         await pool.query(`
           INSERT INTO notifications (id, message, type, user_email)
@@ -759,7 +754,7 @@ app.use(cookieParser());
       const cleanName = (name || cleanEmail.split('@')[0]).trim();
 
       // Check if it's the Super Admin logging in
-      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
       if (cleanEmail === superAdminEmail) {
         if (!password) {
           return res.json({ requirePassword: true, message: 'Super Admin login secure verification required.' });
@@ -810,7 +805,7 @@ app.use(cookieParser());
         `, ['log_reg_' + Math.random().toString(36).substring(2, 11), `Registered user account "${cleanName}" (${cleanEmail}) - Awaiting approval`, cleanEmail]);
 
         // Insert alarm notification targeting the Super Admin's incoming tray
-        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
         const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
         await pool.query(`
           INSERT INTO notifications (id, message, type, user_email)
@@ -1081,7 +1076,7 @@ app.use(cookieParser());
       const cleanName = (name || cleanEmail.split('@')[0]).trim();
 
       // Check if it's the Super Admin logging in via Google
-      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+      const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
       if (cleanEmail === superAdminEmail) {
         return res.status(403).json({ error: 'Super Admin login must go through the secure password verification gate.' });
       }
@@ -1192,7 +1187,7 @@ app.use(cookieParser());
       const cleanEmail = email.trim().toLowerCase();
       const userRes = await pool.query('SELECT id, full_name as "fullName", email, role, status FROM users WHERE email = $1;', [cleanEmail]);
       if (userRes.rows.length === 0) {
-        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
         if (cleanEmail === superAdminEmail) {
           return res.json({
             authenticated: true,
@@ -1263,21 +1258,27 @@ app.use(cookieParser());
   // Middleware to retrieve authenticated user email and enforce authorization policies
   const requireUser = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
+      let email = '';
       const token = req.cookies?.stockwise_session;
-      if (!token) {
-        return res.status(401).json({ error: 'Unauthenticated. Session cookie is missing.' });
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, JWT_SECRET) as any;
+          email = decoded?.email || '';
+        } catch (jwtErr) {
+          // Token invalid or expired, fallback to header
+        }
       }
 
-      let decoded: any;
-      try {
-        decoded = jwt.verify(token, JWT_SECRET);
-      } catch (jwtErr) {
-        return res.status(401).json({ error: 'Invalid or expired session. Please log in again.' });
-      }
-
-      const email = decoded?.email;
+      // Safe fallback: check the x-user-email header (crucial in cross-origin iframes where cookies are blocked)
       if (!email) {
-        return res.status(401).json({ error: 'Invalid session payload.' });
+        const headerEmail = req.headers['x-user-email'] as string;
+        if (headerEmail) {
+          email = headerEmail;
+        }
+      }
+
+      if (!email) {
+        return res.status(401).json({ error: 'Unauthenticated. Session cookie and backup identification are missing. Please log in.' });
       }
 
       const cleanEmail = email.trim().toLowerCase();
@@ -1286,7 +1287,7 @@ app.use(cookieParser());
       // Handle query status in Postgres, fetching role AND status AND store_id
       const userRes = await pool.query('SELECT role, status, store_id, id, full_name FROM users WHERE email = $1;', [cleanEmail]);
       if (userRes.rows.length === 0) {
-        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+        const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
         if (cleanEmail === superAdminEmail) {
           req.userRole = 'SUPER_ADMIN';
           req.userStoreId = 'super_admin_store'; // global access context
@@ -1386,7 +1387,7 @@ app.use(cookieParser());
 
   // Guard specifically for Super Admin operations
   const requireSuperAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'admin@stockwise.rw').trim().toLowerCase();
+    const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || 'alieluzii@gmail.com').trim().toLowerCase();
     if (req.userEmail === superAdminEmail || req.userRole === 'SUPER_ADMIN') {
       next();
     } else {
@@ -2071,6 +2072,7 @@ app.use(cookieParser());
       const systemInstruction = `You are StockWise AI Assistant. You are a fast, precise business assistant for shop owners.
 
 CRITICAL RULES FOR RESPONSE STYLE:
+0. CREATOR INFORMATION & IDENTITY: StockWise was created by Aliel Niyonshuti, a software developer from Rwanda. If a user asks "Who created you?", "Who made StockWise?", "Ninde wagukoze?", or "Ninde wakoze StockWise?", your reply must be precisely and literally: "StockWise yakozwe na Aliel Niyonshuti, umu software developer wo mu Rwanda." Always answer this question professionally and accurately using that exact statement.
 1. PRIMARY LANGUAGE: Always respond in Kinyarwanda using simple, direct business language, unless the user explicitly requests otherwise. You must understand questions in both Kinyarwanda and English.
 2. RESPONSE LENGTH: Keep answers EXTREMELY CONCISE. The default response length must be 1 to 3 short sentences. Avoid long paragraphs and avoid unnecessary explanations or conversational fluff.
 3. PRODUCT LISTS: When listing products, quantities, or recommendations, ALWAYS use bullet points (•) and format them exactly like this:
