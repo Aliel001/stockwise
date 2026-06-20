@@ -2141,6 +2141,29 @@ app.use(cookieParser());
     }
   });
 
+  // DELETE /api/activity-logs
+  app.delete('/api/activity-logs', requireUser, async (req, res) => {
+    try {
+      if (req.userRole === 'SUPER_ADMIN') {
+        await pool.query('DELETE FROM activity_logs;');
+      } else {
+        await pool.query('DELETE FROM activity_logs WHERE store_id = $1;', [req.userStoreId]);
+      }
+
+      // Record a new entry detailing this log purging event
+      await pool.query(
+        `INSERT INTO activity_logs (id, action, performed_by, store_id)
+         VALUES ($1, $2, $3, $4);`,
+        ['log_' + Math.random().toString(36).substring(2, 11), 'Purged activity logs database ledger / Gusiba amateka y\'ikorwa ry\'akazi.', req.userEmail, req.userStoreId]
+      );
+
+      res.json({ success: true, message: 'Logs deleted successfully.' });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // POST /api/clear-all
   app.post('/api/clear-all', requireUser, async (req, res) => {
     const client = await pool.connect();

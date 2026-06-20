@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="indigoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="#0F172A" />
+  <rect x="4" y="4" width="92" height="92" rx="18" fill="none" stroke="#2225 L 34 L 50" stroke-width="1.5" opacity="0.15" />
+  <path d="M50 22 L82 38 L50 54 L18 38 Z" fill="url(#indigoGrad)" />
+  <path d="M18 38 L50 54 L50 78 L18 62 Z" fill="#4F46E5" />
+  <path d="M50 54 L82 38 L82 62 L50 78 Z" fill="#3730A3" />
+  <path d="M50 22 L50 54" stroke="#FFFFFF" stroke-dasharray="2 2" stroke-width="1" opacity="0.4" />
+</svg>

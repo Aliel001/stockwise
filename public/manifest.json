@@ -1,0 +1,18 @@
+{
+  "short_name": "StockWise",
+  "name": "StockWise Inventory Management Hub",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "display": "standalone",
+  "orientation": "portrait",
+  "description": "StockWise yakozwe na Aliel Niyonshuti. Premium enterprise SaaS real-time inventory tracking system designed for small and medium retail shops."
+}

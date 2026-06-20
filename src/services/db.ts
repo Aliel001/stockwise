@@ -196,6 +196,21 @@ export function subscribeActivityLogs(userEmail: string, onChange: (logs: Activi
   };
 }
 
+// Clear activity logs
+export async function clearActivityLogs(userEmail: string) {
+  const response = await fetch('/api/activity-logs', {
+    method: 'DELETE',
+    headers: getHeaders(userEmail),
+  });
+
+  if (!response.ok) {
+    const errorMsg = await safeReadError(response, 'Failed to clear activity logs');
+    throw new Error(errorMsg);
+  }
+
+  return safeReadJson(response);
+}
+
 // 6. Add a Product
 export async function addProduct(p: Omit<Product, 'id' | 'createdBy' | 'createdAt' | 'updatedAt'>) {
   const email = auth.currentUser?.email;

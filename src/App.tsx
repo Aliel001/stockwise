@@ -20,6 +20,7 @@ import NotificationsView from './components/NotificationsView';
 import ActivityLogsView from './components/ActivityLogsView';
 import AIAssistantView from './components/AIAssistantView';
 import SuperAdminView from './components/SuperAdminView';
+import FloatingAIAssistant from './components/FloatingAIAssistant';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -111,8 +112,8 @@ export default function App() {
 
       {/* Primary layout body */}
       <div className="flex-1 flex flex-col min-h-0">
-        {/* Dynamic page state router container component */}
-        <main className="p-6 md:p-8 flex-1 max-w-7xl w-full mx-auto">
+        {/* Dynamic page state router container component with bottom padding adjust on mobile */}
+        <main className="p-4 pb-24 md:p-8 flex-1 max-w-7xl w-full mx-auto">
           {currentPage === Page.Dashboard && (
             <DashboardView 
               products={products}
@@ -140,7 +141,7 @@ export default function App() {
           )}
 
           {currentPage === Page.ActivityLogs && (
-            <ActivityLogsView logs={activityLogs} />
+            <ActivityLogsView logs={activityLogs} currentUserEmail={currentUser?.email || ''} />
           )}
 
           {currentPage === Page.AIAssistant && (
@@ -152,6 +153,11 @@ export default function App() {
           )}
         </main>
       </div>
+      
+      {/* Global floating quick-chat virtual assistant handler */}
+      {currentPage !== Page.AIAssistant && (
+        <FloatingAIAssistant />
+      )}
     </div>
   );
 }

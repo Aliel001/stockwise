@@ -206,6 +206,7 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="lg:hidden p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer"
+              aria-label="Toggle Navigation Drawer"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -213,7 +214,7 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
         </div>
       </div>
 
-      {/* Mobile Drawer Menu Overlay */}
+      {/* Mobile/Tablet Side Drawer Sheet */}
       <AnimatePresence>
         {mobileMenuOpen && (
           <>
@@ -222,72 +223,147 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setMobileMenuOpen(false)}
-              className="fixed inset-0 top-[65px] bg-slate-950/60 backdrop-blur-xs z-30 lg:hidden"
+              className="fixed inset-0 top-0 bg-slate-950/70 backdrop-blur-xs z-50 lg:hidden"
             />
             
             <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="lg:hidden bg-slate-850 border-b border-slate-750 absolute w-full left-0 z-45 overflow-hidden shadow-xl"
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+              className="fixed inset-y-0 left-0 max-w-xs w-full bg-slate-900 border-r border-slate-800 shadow-2xl z-55 flex flex-col justify-between overflow-y-auto lg:hidden"
             >
-              <div className="px-4 py-4 space-y-1.5">
-                {menuItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = currentPage === item.page;
-                  return (
-                    <button
-                      key={item.page}
-                      onClick={() => {
-                        setCurrentPage(item.page);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                        isActive 
-                          ? 'bg-indigo-600 text-white shadow' 
-                          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                      }`}
-                    >
-                      <div className="flex items-center space-x-3">
-                        <Icon className="w-4 h-4" />
-                        <span>{item.label}</span>
-                      </div>
-                      
-                      {item.badge !== undefined && item.badge > 0 ? (
-                        <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-[9px] text-white bg-rose-650 rounded-full font-bold">
-                          {item.badge}
-                        </span>
-                      ) : null}
-                    </button>
-                  );
-                })}
-
-                <div className="pt-3 border-t border-slate-755">
-                  <div className="flex items-center justify-between px-3.5 py-1.5 select-none text-[10px] text-slate-400">
-                    <span>Database Connection:</span>
-                    {networkHealthy === false ? (
-                      <span className="text-red-400 font-bold">Offline</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">Active Sync</span>
-                    )}
+              <div>
+                {/* Drawer Header */}
+                <div className="flex items-center justify-between p-5 border-b border-slate-800 bg-slate-950/40">
+                  <div className="flex items-center space-x-3 select-none">
+                    <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                      <Store className="w-5 h-5" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-base font-extrabold tracking-tight">StockWise</span>
+                      <span className="text-[9px] text-slate-400 font-medium tracking-wide uppercase">Admin Drawer</span>
+                    </div>
                   </div>
-                  
-                  <button
-                    onClick={() => {
-                      setMobileMenuOpen(false);
-                      handleSignOut();
-                    }}
-                    className="w-full mt-2 flex items-center space-x-3 px-3.5 py-2.5 text-rose-350 hover:bg-rose-950/20 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  <button 
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg"
                   >
-                    <LogOut className="w-4 h-4 text-rose-450" />
-                    <span>Sign Out Manager</span>
+                    <X className="w-5 h-5" />
                   </button>
                 </div>
+
+                {/* Drawer Navigation items */}
+                <div className="px-3.5 py-4 space-y-1.5">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-3 mb-2">Menu Sections</p>
+                  {menuItems.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = currentPage === item.page;
+                    return (
+                      <button
+                        key={item.page}
+                        onClick={() => {
+                          setCurrentPage(item.page);
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                          isActive 
+                            ? 'bg-indigo-600 text-white shadow' 
+                            : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <Icon className="w-4 h-4" />
+                          <span>{item.label}</span>
+                        </div>
+                        
+                        {item.badge !== undefined && item.badge > 0 ? (
+                          <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-[9px] text-white bg-rose-650 rounded-full font-bold">
+                            {item.badge}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Drawer Footer info & logout */}
+              <div className="p-4 border-t border-slate-800 bg-slate-950/20">
+                <div className="flex items-center space-x-2 px-3 py-2 bg-slate-850/50 rounded-xl mb-3 border border-slate-800/30">
+                  {currentUser && (
+                    <div className="w-8 h-8 rounded-full bg-indigo-900 border border-indigo-505 flex items-center justify-center text-white text-xs font-bold font-sans">
+                      {currentUser.displayName ? currentUser.displayName[0] : (currentUser.email ? currentUser.email[0].toUpperCase() : 'A')}
+                    </div>
+                  )}
+                  <div className="overflow-hidden">
+                    <p className="text-xs font-bold text-slate-200 truncate">{currentUser?.displayName || 'Active Admin'}</p>
+                    <p className="text-[10px] text-slate-500 truncate mt-0.5">{currentUser?.email}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between px-3 py-2 text-[10px] text-slate-450">
+                  <span>Database Tally:</span>
+                  {networkHealthy === false ? (
+                    <span className="text-red-400 font-bold bg-red-950/20 px-1.5 py-0.5 rounded">Offline</span>
+                  ) : (
+                    <span className="text-emerald-400 font-bold bg-emerald-950/20 px-1.5 py-0.5 rounded">Live Sync</span>
+                  )}
+                </div>
+                
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleSignOut();
+                  }}
+                  className="w-full mt-3 flex items-center justify-center space-x-2 px-3.5 py-3 text-rose-300 hover:text-white bg-rose-950/10 hover:bg-rose-950/30 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-rose-950/30"
+                >
+                  <LogOut className="w-4 h-4 text-rose-450" />
+                  <span>Sohoka / Log Out</span>
+                </button>
               </div>
             </motion.div>
           </>
         )}
       </AnimatePresence>
+
+      {/* MOBILE PERSISTENT BOTTOM NAVIGATION BAR (PWA Native App Experience) */}
+      <div id="pwa-bottom-nav" className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900 border-t border-slate-800/80 backdrop-blur-md flex justify-around items-center h-16 pb-safe lg:hidden shadow-2xl">
+        {menuItems.slice(0, 5).map((item) => {
+          const Icon = item.icon;
+          const isActive = currentPage === item.page;
+          return (
+            <button
+              key={item.page}
+              onClick={() => setCurrentPage(item.page)}
+              className={`flex flex-col items-center justify-center w-14 h-12 rounded-xl transition-all relative ${
+                isActive ? 'text-indigo-400 scale-105' : 'text-slate-400 active:text-slate-200'
+              }`}
+            >
+              <Icon className="w-5 h-5 mb-0.5" />
+              <span className="text-[9px] font-bold tracking-tight truncate max-w-[56px]">
+                {item.label}
+              </span>
+              
+              {/* Dynamic Notification badge */}
+              {item.badge !== undefined && item.badge > 0 ? (
+                <span className="absolute -top-1 -right-1.5 inline-flex items-center justify-center w-4 h-4 text-[9px] text-white bg-rose-600 rounded-full font-bold shadow-md">
+                  {item.badge}
+                </span>
+              ) : null}
+
+              {/* Accent dot indicator */}
+              {isActive && (
+                <motion.div 
+                  layoutId="bottomTabDot"
+                  className="w-1.5 h-1.5 rounded-full bg-indigo-500 absolute -bottom-1"
+                  transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
     </header>
   );
 }
