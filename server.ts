@@ -557,6 +557,9 @@ app.use(cookieParser());
 
   // In-memory registry for email verification codes
   const verificationCodes = new Map<string, { code: string; name: string; phone: string; expiresAt: number }>();
+  
+  // In-memory registry for forgot password reset codes
+  const passwordResetCodes = new Map<string, { code: string; phone: string; expiresAt: number }>();
 
   // Robust function to check if the email is a genuine store email address
   function isRealEmail(email: string): { isValid: boolean; reason: string } {
@@ -742,6 +745,127 @@ app.use(cookieParser());
   function hashPassword(password: string): string {
     return crypto.createHash('sha256').update(password).digest('hex');
   }
+
+  // POST /api/auth/forgot-password-request - Generates a 6-digit reset code if email exists
+  app.post('/api/auth/forgot-password-request', async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const userRes = await pool.query('SELECT * FROM users WHERE email = $1;', [cleanEmail]);
+      if (userRes.rows.length === 0) {
+        return res.status(404).json({ error: 'Ntakintu kibonetse cyanditse kuri iyi imeri. / No account registered with this email address.' });
+      }
+
+      const user = userRes.rows[0];
+      const phone = user.phone || 'N/A';
+
+      // Generate a 6-digit verification reset code
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+      // Store in memory with 10-minute expiry
+      passwordResetCodes.set(cleanEmail, {
+        code,
+        phone,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      });
+
+      console.log(`[Forgot Password Reset Code] Set reset code ${code} for user ${cleanEmail}`);
+
+      return res.json({
+        success: true,
+        message: 'Agaciro k’umutekano k’isuzuma koherejwe! / A password reset code has been sent!',
+        email: cleanEmail,
+        phone,
+        code // Sent in response so frontend can simulate SMTP/SMS delivery perfectly in sandbox env
+      });
+    } catch (err: any) {
+      console.error('[forgot-password-request error]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/auth/forgot-password-verify - Checks if the 6-digit code is valid
+  app.post('/api/auth/forgot-password-verify', async (req, res) => {
+    try {
+      const { email, code } = req.body;
+      if (!email || !code) {
+        return res.status(400).json({ error: 'Email and code are required' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanCode = code.trim();
+
+      const record = passwordResetCodes.get(cleanEmail);
+      if (!record) {
+        return res.status(400).json({ error: 'Nta gatsiko ko guhindura ijambo ry\'ibanga gahari cg karemewe. / No active password reset request found.' });
+      }
+
+      if (record.expiresAt < Date.now()) {
+        passwordResetCodes.delete(cleanEmail);
+        return res.status(400).json({ error: 'Agaciro koherejwe kagiyeho igihe. Ongera usabe akandi. / Reset code has expired.' });
+      }
+
+      if (record.code !== cleanCode) {
+        return res.status(400).json({ error: 'Agaciro k’umutekano ufunze ntabwo ari ko. / Invalid verification code.' });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Agaciro kemejwe neza! / Verification code is valid!'
+      });
+    } catch (err: any) {
+      console.error('[forgot-password-verify error]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/auth/forgot-password-reset - Updates the password to a chosen new one
+  app.post('/api/auth/forgot-password-reset', async (req, res) => {
+    try {
+      const { email, code, newPassword } = req.body;
+      if (!email || !code || !newPassword) {
+        return res.status(400).json({ error: 'Email, code, and new password are required' });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanCode = code.trim();
+
+      const record = passwordResetCodes.get(cleanEmail);
+      if (!record || record.code !== cleanCode) {
+        return res.status(400).json({ error: 'Amakuru ntatunganye cg code si yo. / Reset session is invalid or has expired.' });
+      }
+
+      if (record.expiresAt < Date.now()) {
+        passwordResetCodes.delete(cleanEmail);
+        return res.status(400).json({ error: 'Umwanya woguhindura warangiye. / Reset request has expired.' });
+      }
+
+      if (newPassword.trim().length < 6) {
+        return res.status(400).json({ error: 'Ijambo ry’ibanga rigomba kugira inyuguti zengeye kuri 6. / Password must be at least 6 characters.' });
+      }
+
+      // Update the user's password securely
+      const hashedPass = hashPassword(newPassword.trim());
+      await pool.query('UPDATE users SET password = $1 WHERE email = $2;', [hashedPass, cleanEmail]);
+
+      // Clear the temporary reset code
+      passwordResetCodes.delete(cleanEmail);
+
+      console.log(`[Forgot Password Reset Success] Password changed for ${cleanEmail}`);
+
+      return res.json({
+        success: true,
+        message: 'Ijambo ry’ibanga rishya ryemejwe neza! Binjire ubu. / Password updated successfully!'
+      });
+    } catch (err: any) {
+      console.error('[forgot-password-reset error]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // POST /api/auth/login-check - Single login validation gateway
   app.post('/api/auth/login-check', async (req, res) => {

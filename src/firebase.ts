@@ -279,6 +279,68 @@ export async function signInWithPassword(email: string, password: string) {
   return newUser;
 }
 
+export async function forgotPasswordRequest(email: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  const response = await fetch('/api/auth/forgot-password-request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cleanEmail })
+  });
+
+  if (!response.ok) {
+    let errMsg = 'Failed to request password reset';
+    try {
+      const errData = await response.json();
+      errMsg = errData.error || errMsg;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  return await response.json();
+}
+
+export async function forgotPasswordVerify(email: string, code: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanCode = code.trim();
+  const response = await fetch('/api/auth/forgot-password-verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cleanEmail, code: cleanCode })
+  });
+
+  if (!response.ok) {
+    let errMsg = 'Failed to verify reset code';
+    try {
+      const errData = await response.json();
+      errMsg = errData.error || errMsg;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  return await response.json();
+}
+
+export async function forgotPasswordReset(email: string, code: string, newPassword: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanCode = code.trim();
+  const response = await fetch('/api/auth/forgot-password-reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: cleanEmail, code: cleanCode, newPassword })
+  });
+
+  if (!response.ok) {
+    let errMsg = 'Failed to reset password';
+    try {
+      const errData = await response.json();
+      errMsg = errData.error || errMsg;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  return await response.json();
+}
+
 export async function logOut() {
   currentUser = null;
   isMeLoaded = true;
