@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
+import nodemailer from 'nodemailer';
 
 declare global {
   namespace Express {
@@ -625,14 +626,49 @@ app.use(cookieParser());
 
       console.log(`[Auth verification] Generated OTP: ${code} for client: ${cleanEmail} (Phone: ${cleanPhone || 'N/A'})`);
 
+      // Send real email if SMTP configured
+      const emailHtml = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #1e293b;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h2 style="color: #4f46e5; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.025em;">StockWise</h2>
+            <p style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; tracking: 0.1em; margin: 4px 0 0 0;">Inventory Management System</p>
+          </div>
+          <hr style="border: 0; border-top: 1px solid #f1f5f9; margin-bottom: 24px;" />
+          <h3 style="font-size: 16px; font-weight: 700; color: #0f172a; margin-top: 0; margin-bottom: 12px;">Agaciro k'Isuzumwa rya Konti / Verification OTP Code</h3>
+          <p style="font-size: 14px; line-height: 1.6; color: #334155; margin-top: 0; margin-bottom: 20px;">
+            Murakoze kwiyandikisha cyangwa kwinjira kuri StockWise, <b>${cleanName}</b>. Koresha kano gaciro k'isuzuma kugirango wemeze isura yanyu:<br />
+            <span style="color: #64748b; font-size: 12px; font-style: italic;">(Thank you for signing in/up on StockWise, ${cleanName}. Use this OTP verification code to verify your account:)</span>
+          </p>
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 24px;">
+            <span style="font-family: monospace; font-size: 32px; font-weight: 800; color: #4f46e5; letter-spacing: 0.25em; padding-left: 0.25em;">${code}</span>
+          </div>
+          <p style="font-size: 12px; line-height: 1.5; color: #64748b; margin-top: 0; margin-bottom: 24px;">
+            Kano gaciro k'isuzuma kamara iminota 10 gusa. Niba utabyisabiye, ntugire icyo ukora.<br />
+            <span style="color: #94a3b8;">(This code is valid for 10 minutes. If you did not trigger this request, no action is required.)</span>
+          </p>
+          <hr style="border: 0; border-top: 1px solid #f1f5f9; margin-bottom: 16px;" />
+          <p style="font-size: 11px; text-align: center; color: #94a3b8; margin: 0;">&copy; 2026 StockWise Corp. All rights reserved.</p>
+        </div>
+      `;
+
+      const mailResult = await sendEmail({
+        to: cleanEmail,
+        subject: `[StockWise] Verification OTP: ${code}`,
+        text: `Hello, your Stockwise verification code is: ${code}`,
+        html: emailHtml
+      });
+
       // We return the code transparently in the JSON payload of the response in this deployment environment
       // so the user can see/access it within their sandbox preview naturally
       res.json({
         success: true,
-        message: 'Agaciro k’umutekano koherejwe successfully!',
+        message: mailResult.sent 
+          ? 'Agaciro k’umutekano koherejwe neza kuri imeri yanyu! / Verification code sent successfully to your account email!'
+          : 'Agaciro k’umutekano koherejwe successfully!',
         email: cleanEmail,
         phone: cleanPhone || 'None',
         code: code, // Shared in response body to guarantee seamless preview functionality
+        isRealEmailSent: mailResult.sent
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -741,6 +777,46 @@ app.use(cookieParser());
     }
   });
 
+  // Helper function to send real outbound emails if SMTP configuration is found
+  async function sendEmail({ to, subject, text, html }: { to: string; subject: string; text: string; html: string }) {
+    const host = process.env.SMTP_HOST;
+    const port = parseInt(process.env.SMTP_PORT || '587', 10);
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    const from = process.env.EMAIL_FROM || `"Stockwise" <${user || 'no-reply@stockwise.rw'}>`;
+
+    if (!user || !pass) {
+      console.warn(`[Mail service] SMTP credentials not fully configured (SMTP_USER/SMTP_PASS are empty). Real email of "${subject}" was NOT sent to ${to}. Code displayed in developers' logger and UI sandbox instead.`);
+      return { sent: false, reason: 'SMTP_CREDENTIALS_MISSING' };
+    }
+
+    try {
+      const transporter = nodemailer.createTransport({
+        host: host || 'smtp.gmail.com',
+        port: port || 587,
+        secure: port === 465, // true for 465, false for other ports
+        auth: {
+          user,
+          pass,
+        },
+      });
+
+      const info = await transporter.sendMail({
+        from,
+        to,
+        subject,
+        text,
+        html,
+      });
+
+      console.log(`[Mail service] Real email successfully sent to <${to}>. Message ID: ${info.messageId}`);
+      return { sent: true, messageId: info.messageId };
+    } catch (err: any) {
+      console.error(`[Mail service] Error sending real email to <${to}>:`, err);
+      return { sent: false, error: err.message };
+    }
+  }
+
   // helper function to hash passwords securely
   function hashPassword(password: string): string {
     return crypto.createHash('sha256').update(password).digest('hex');
@@ -775,12 +851,47 @@ app.use(cookieParser());
 
       console.log(`[Forgot Password Reset Code] Set reset code ${code} for user ${cleanEmail}`);
 
+      // Try to send a real email using SMTP configuration
+      const emailHtml = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #1e293b;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h2 style="color: #4f46e5; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.025em;">StockWise</h2>
+            <p style="font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; tracking: 0.1em; margin: 4px 0 0 0;">Inventory Management System</p>
+          </div>
+          <hr style="border: 0; border-top: 1px solid #f1f5f9; margin-bottom: 24px;" />
+          <h3 style="font-size: 16px; font-weight: 700; color: #0f172a; margin-top: 0; margin-bottom: 12px;">Agaciro k'Umutekano / Change Password Request</h3>
+          <p style="font-size: 14px; line-height: 1.6; color: #334155; margin-top: 0; margin-bottom: 20px;">
+            Muraho, mwasabye guhindura ijambo ry'ibanga rya konti yanyu kuri StockWise. Koresha aka gaciro koherejwe kugirango wemeze umutekano:<br />
+            <span style="color: #64748b; font-size: 12px; font-style: italic;">(Hello, you requested a password reset. Use this verification code to set your new password:)</span>
+          </p>
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 24px;">
+            <span style="font-family: monospace; font-size: 32px; font-weight: 800; color: #4f46e5; letter-spacing: 0.25em; padding-left: 0.25em;">${code}</span>
+          </div>
+          <p style="font-size: 12px; line-height: 1.5; color: #64748b; margin-top: 0; margin-bottom: 24px;">
+            Aka gaciro kagumaho umutekano mu gihe cy'iminota 10 gusa. Niba mutabyisabiye tubasabye kubyirengagiza.<br />
+            <span style="color: #94a3b8;">(This code is only active for 10 minutes. If you did not make this request, please ignore this email safely.)</span>
+          </p>
+          <hr style="border: 0; border-top: 1px solid #f1f5f9; margin-bottom: 16px;" />
+          <p style="font-size: 11px; text-align: center; color: #94a3b8; margin: 0;">&copy; 2026 StockWise Corp. All rights reserved.</p>
+        </div>
+      `;
+
+      const mailResult = await sendEmail({
+        to: cleanEmail,
+        subject: `[StockWise] Verification Code: ${code}`,
+        text: `Hello, you requested a password reset on Stockwise. Your 6-digit verification code is: ${code}`,
+        html: emailHtml,
+      });
+
       return res.json({
         success: true,
-        message: 'Agaciro k’umutekano k’isuzuma koherejwe! / A password reset code has been sent!',
+        message: mailResult.sent 
+          ? 'Agaciro k’umutekano koherejwe neza kuri imeri yanyu! / Verification code sent successfully to your email!' 
+          : 'Agaciro k’umutekano k’isuzuma koherejwe! / A password reset code has been sent!',
         email: cleanEmail,
         phone,
-        code // Sent in response so frontend can simulate SMTP/SMS delivery perfectly in sandbox env
+        code, // Always shared in fallback so offline sandbox works seamlessly
+        isRealEmailSent: mailResult.sent
       });
     } catch (err: any) {
       console.error('[forgot-password-request error]', err);
