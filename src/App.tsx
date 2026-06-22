@@ -28,6 +28,29 @@ export default function App() {
   const [networkHealthy, setNetworkHealthy] = useState<boolean | null>(null);
   const [currentPage, setCurrentPage] = useState<Page>(Page.Dashboard);
 
+  // Theme State (Persisted in localStorage, respects system theme if no preference saved)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      return 'dark';
+    }
+    return 'light';
+  });
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  };
+
   // Collections State
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
@@ -85,9 +108,9 @@ export default function App() {
 
   if (authChecking) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center p-4">
         <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-        <p className="text-xs text-slate-500 font-bold mt-4 tracking-wide uppercase">Initializing StockWise...</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 font-bold mt-4 tracking-wide uppercase">Initializing StockWise...</p>
       </div>
     );
   }
@@ -101,13 +124,15 @@ export default function App() {
   const unreadNotificationsCount = notifications.filter(n => !n.isRead).length;
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col transition-colors duration-200">
       {/* Top Header Navigation Bar */}
       <HeaderNav 
         currentPage={currentPage}
         setCurrentPage={setCurrentPage}
         unreadCount={unreadNotificationsCount}
         networkHealthy={networkHealthy}
+        theme={theme}
+        toggleTheme={toggleTheme}
       />
 
       {/* Primary layout body */}

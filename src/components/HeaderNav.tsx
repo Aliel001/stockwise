@@ -16,7 +16,9 @@ import {
   ChevronDown,
   Wifi,
   WifiOff,
-  Sparkles
+  Sparkles,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -25,9 +27,11 @@ interface HeaderNavProps {
   setCurrentPage: (page: Page) => void;
   unreadCount: number;
   networkHealthy: boolean | null;
+  theme: 'light' | 'dark';
+  toggleTheme: () => void;
 }
 
-export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, networkHealthy }: HeaderNavProps) {
+export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, networkHealthy, theme, toggleTheme }: HeaderNavProps) {
   const currentUser = auth.currentUser;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -124,6 +128,22 @@ export default function HeaderNav({ currentPage, setCurrentPage, unreadCount, ne
               <Bell className="w-4.5 h-4.5" />
               {unreadCount > 0 && (
                 <span className="absolute top-1 right-1 w-2 h-2 bg-rose-500 rounded-full ring-2 ring-slate-900 animate-pulse" />
+              )}
+            </button>
+
+            {/* Theme Toggle Option */}
+            <button
+              id="btn-theme-toggle"
+              type="button"
+              onClick={toggleTheme}
+              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all cursor-pointer border border-transparent hover:border-slate-700/60"
+              title={theme === 'dark' ? 'Guhindura Umucyo / Switch to light mode' : 'Guhindura Umwijima / Switch to dark mode'}
+              aria-label="Toggle visual theme"
+            >
+              {theme === 'dark' ? (
+                <Sun className="w-4.5 h-4.5 text-amber-400 animate-spin-slow" />
+              ) : (
+                <Moon className="w-4.5 h-4.5 text-indigo-300" />
               )}
             </button>
 

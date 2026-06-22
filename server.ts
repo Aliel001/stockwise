@@ -22,6 +22,85 @@ declare global {
 // Load original environmental parameters and configuration
 dotenv.config();
 
+// Performance Cache for AI context database results
+interface AICacheEntry {
+  timestamp: number;
+  data: any;
+}
+const aiContextCache = new Map<string, AICacheEntry>();
+
+function invalidateAICache(email: string) {
+  if (!email) return;
+  const cleanEmail = email.trim().toLowerCase();
+  if (aiContextCache.has(cleanEmail)) {
+    aiContextCache.delete(cleanEmail);
+    console.log(`[AI Cache] Invalidated cache for: ${cleanEmail}`);
+  }
+}
+
+function filterDbContext(message: string, rawContext: any): any {
+  if (!rawContext) return {};
+  const msgLower = (message || '').toLowerCase();
+  
+  const filtered = {
+    products: [] as any[],
+    sales: [] as any[],
+    stockIns: [] as any[],
+    notifications: (rawContext.notifications || []).slice(0, 5),
+    activityLogs: (rawContext.activityLogs || []).slice(0, 5)
+  };
+
+  // Check if user is asking about a specific product in our inventory
+  const matchedProducts = (rawContext.products || []).filter((p: any) => {
+    const productName = p.name ? p.name.toLowerCase() : '';
+    const productCode = p.code ? p.code.toLowerCase() : '';
+    return productName !== '' && (msgLower.includes(productName) || msgLower.includes(productCode));
+  });
+
+  if (matchedProducts.length > 0) {
+    // If specific product matched, prioritize only this matched product to optimize speed and cost!
+    filtered.products = matchedProducts;
+    
+    const matchedProductNames = new Set(matchedProducts.map((p: any) => p.name.toLowerCase()));
+    filtered.sales = (rawContext.sales || []).filter((s: any) => {
+      const pName = s.item?.name ? s.item.name.toLowerCase() : '';
+      return pName !== '' && matchedProductNames.has(pName);
+    }).slice(0, 5);
+
+    filtered.stockIns = (rawContext.stockIns || []).filter((si: any) => {
+      const pName = si.productName ? si.productName.toLowerCase() : '';
+      return pName !== '' && matchedProductNames.has(pName);
+    }).slice(0, 5);
+    
+    return filtered;
+  }
+
+  // Asking for low stock / "bishize" / "shize"
+  const isAskingAboutLowStock = msgLower.includes('shize') || msgLower.includes('bishize') || msgLower.includes('gushira') || msgLower.includes('low stock') || msgLower.includes('minimum');
+  if (isAskingAboutLowStock) {
+    filtered.products = (rawContext.products || []).filter((p: any) => p.isLowStock || p.currentQuantity <= p.minStock);
+    filtered.sales = [];
+    filtered.stockIns = [];
+    return filtered;
+  }
+
+  // Asking for sales/revenue/profit
+  const isAskingAboutSalesIncomes = msgLower.includes('injije') || msgLower.includes('ncuruje') || msgLower.includes('kwinjiza') || msgLower.includes('curuza') || msgLower.includes('sales') || msgLower.includes('revenue') || msgLower.includes('profit') || msgLower.includes('winjije') || msgLower.includes('gucuruza') || msgLower.includes('angahe');
+  if (isAskingAboutSalesIncomes) {
+    filtered.products = (rawContext.products || []).map((p: any) => ({ name: p.name, sellingPrice: p.sellingPrice, currentQuantity: p.currentQuantity }));
+    filtered.sales = (rawContext.sales || []).slice(0, 20); // Last 20 sales
+    filtered.stockIns = [];
+    return filtered;
+  }
+
+  // Standard slice of context (extremely lean to prevent high pipeline latency)
+  filtered.products = (rawContext.products || []).slice(0, 20);
+  filtered.sales = (rawContext.sales || []).slice(0, 8);
+  filtered.stockIns = (rawContext.stockIns || []).slice(0, 8);
+  
+  return filtered;
+}
+
 // Fallback logic if DATABASE_URL can't be fetched
 if (!process.env.DATABASE_URL) {
   try {
@@ -528,6 +607,25 @@ app.use(cookieParser());
         await ensureSchemaInitialized();
       } catch (err: any) {
         console.error('[PostgreSQL Initialization Middleware Error]', err);
+      }
+    }
+    next();
+  });
+
+  // Automated cache invalidation middleware for mutations
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'OPTIONS' && req.path.startsWith('/api/')) {
+      try {
+        let email = req.headers['x-user-email'] as string;
+        if (!email && req.cookies?.stockwise_session) {
+          const decoded = jwt.decode(req.cookies.stockwise_session) as any;
+          email = decoded?.email;
+        }
+        if (email) {
+          invalidateAICache(email);
+        }
+      } catch (err) {
+        // Suppressed diagnostic trace
       }
     }
     next();
@@ -2224,107 +2322,125 @@ app.use(cookieParser());
     try {
       const email = req.userEmail;
 
-      // 1. Fetch products & stock
-      const productsQuery = `
-        SELECT p.id, p.name, p.product_code as "productCode", p.description,
-               p.purchase_price::float as "purchasePrice",
-               p.selling_price::float as "sellingPrice",
-               p.min_stock::int as "minStock",
-               COALESCE(s.quantity, 0)::int as quantity
-        FROM products p
-        LEFT JOIN inventory_stock s ON p.id = s.product_id
-        WHERE p.created_by = $1
-        ORDER BY p.name ASC;
-      `;
-      const productsRes = await pool.query(productsQuery, [email]);
+      // 1. Resolve store data context with high-performance Caching
+      let dbContext: any = null;
+      const cached = aiContextCache.get(email);
+      const cacheTTL = 30000; // 30 seconds TTL (mutations invalidate instantly)
+      
+      if (cached && (Date.now() - cached.timestamp < cacheTTL)) {
+        dbContext = cached.data;
+      } else {
+        // Optimizing database pipeline using highly-indexed parallel queries
+        const productsQuery = `
+          SELECT p.id, p.name, p.product_code as "productCode",
+                 p.purchase_price::float as "purchasePrice",
+                 p.selling_price::float as "sellingPrice",
+                 p.min_stock::int as "minStock",
+                 COALESCE(s.quantity, 0)::int as quantity
+          FROM products p
+          LEFT JOIN inventory_stock s ON p.id = s.product_id
+          WHERE p.created_by = $1
+          ORDER BY p.name ASC;
+        `;
+        
+        const salesQuery = `
+          SELECT s.id, si.product_id as "productId", p.name as "productName",
+                 si.quantity::int as quantity, si.price::float as price,
+                 p.purchase_price::float as "purchasePrice",
+                 s.created_at as "createdAt"
+          FROM sales s
+          JOIN sales_items si ON s.id = si.sale_id
+          JOIN products p ON si.product_id = p.id
+          WHERE s.performed_by = $1
+          ORDER BY s.created_at DESC
+          LIMIT 100;
+        `;
+        
+        const stockInsQuery = `
+          SELECT id, product_id as "productId", product_name as "productName",
+                 quantity::int as quantity, supplier, notes, purchase_price::float as "purchasePrice", created_at as "createdAt"
+          FROM stock_ins
+          WHERE performed_by = $1
+          ORDER BY created_at DESC
+          LIMIT 50;
+        `;
+        
+        const notificationsQuery = `
+          SELECT id, message, type, is_read as "isRead", created_at as "createdAt"
+          FROM notifications
+          WHERE user_email = $1
+          ORDER BY created_at DESC
+          LIMIT 15;
+        `;
+        
+        const logsQuery = `
+          SELECT action, created_at as "createdAt"
+          FROM activity_logs
+          WHERE performed_by = $1
+          ORDER BY created_at DESC
+          LIMIT 15;
+        `;
 
-      // 2. Fetch sales
-      const salesQuery = `
-        SELECT s.id, si.product_id as "productId", p.name as "productName",
-               si.quantity::int as quantity, si.price::float as price,
-               p.purchase_price::float as "purchasePrice",
-               s.created_at as "createdAt"
-        FROM sales s
-        JOIN sales_items si ON s.id = si.sale_id
-        JOIN products p ON si.product_id = p.id
-        WHERE s.performed_by = $1
-        ORDER BY s.created_at DESC;
-      `;
-      const salesRes = await pool.query(salesQuery, [email]);
+        const [productsRes, salesRes, stockInsRes, notificationsRes, logsRes] = await Promise.all([
+          pool.query(productsQuery, [email]),
+          pool.query(salesQuery, [email]),
+          pool.query(stockInsQuery, [email]),
+          pool.query(notificationsQuery, [email]),
+          pool.query(logsQuery, [email])
+        ]);
 
-      // 3. Fetch stock-ins
-      const stockInsQuery = `
-        SELECT id, product_id as "productId", product_name as "productName",
-               quantity::int as quantity, supplier, notes, purchase_price::float as "purchasePrice", created_at as "createdAt"
-        FROM stock_ins
-        WHERE performed_by = $1
-        ORDER BY created_at DESC;
-      `;
-      const stockInsRes = await pool.query(stockInsQuery, [email]);
+        dbContext = {
+          products: productsRes.rows.map(p => ({
+            name: p.name,
+            code: p.productCode,
+            purchasePrice: p.purchasePrice,
+            sellingPrice: p.sellingPrice,
+            minStock: p.minStock,
+            currentQuantity: p.quantity,
+            isLowStock: p.quantity <= p.minStock
+          })),
+          sales: salesRes.rows.map(s => ({
+            saleId: s.id,
+            createdAt: s.createdAt,
+            item: {
+              name: s.productName,
+              quantity: s.quantity,
+              price: s.price,
+              purchasePrice: s.purchasePrice,
+              profit: s.quantity * (s.price - s.purchasePrice)
+            }
+          })),
+          stockIns: stockInsRes.rows.map(si => ({
+            productName: si.productName,
+            quantity: si.quantity,
+            purchasePrice: si.purchasePrice || 0,
+            supplier: si.supplier || 'Nta we wanditse',
+            notes: si.notes || '',
+            createdAt: si.createdAt
+          })),
+          notifications: notificationsRes.rows.map(n => ({
+            message: n.message,
+            type: n.type,
+            isRead: n.isRead,
+            createdAt: n.createdAt
+          })),
+          activityLogs: logsRes.rows.map(l => ({
+            action: l.action,
+            createdAt: l.createdAt
+          }))
+        };
 
-      // 4. Fetch notifications
-      const notificationsQuery = `
-        SELECT id, message, type, is_read as "isRead", created_at as "createdAt"
-        FROM notifications
-        WHERE user_email = $1
-        ORDER BY created_at DESC;
-      `;
-      const notificationsRes = await pool.query(notificationsQuery, [email]);
-
-      // 5. Fetch activity logs
-      const logsQuery = `
-        SELECT action, created_at as "createdAt"
-        FROM activity_logs
-        WHERE performed_by = $1
-        ORDER BY created_at DESC
-        LIMIT 25;
-      `;
-      const logsRes = await pool.query(logsQuery, [email]);
-
-      // Structure data compact
-      const dbContext = {
-        products: productsRes.rows.map(p => ({
-          name: p.name,
-          code: p.productCode,
-          purchasePrice: p.purchasePrice,
-          sellingPrice: p.sellingPrice,
-          minStock: p.minStock,
-          currentQuantity: p.quantity,
-          isLowStock: p.quantity <= p.minStock
-        })),
-        sales: salesRes.rows.map(s => ({
-          saleId: s.id,
-          createdAt: s.createdAt,
-          item: {
-            name: s.productName,
-            quantity: s.quantity,
-            price: s.price,
-            purchasePrice: s.purchasePrice,
-            profit: s.quantity * (s.price - s.purchasePrice)
-          }
-        })),
-        stockIns: stockInsRes.rows.map(si => ({
-          productName: si.productName,
-          quantity: si.quantity,
-          purchasePrice: si.purchasePrice || 0,
-          supplier: si.supplier || 'Nta we wanditse',
-          notes: si.notes || '',
-          createdAt: si.createdAt
-        })),
-        notifications: notificationsRes.rows.map(n => ({
-          message: n.message,
-          type: n.type,
-          isRead: n.isRead,
-          createdAt: n.createdAt
-        })),
-        activityLogs: logsRes.rows.map(l => ({
-          action: l.action,
-          createdAt: l.createdAt
-        }))
-      };
+        aiContextCache.set(email, {
+          timestamp: Date.now(),
+          data: dbContext
+        });
+      }
 
       const currentTime = new Date().toISOString();
       const ai = getGeminiClient();
+
+      // Reduce database content context dynamically to match semantic query intent for massive latency reduction!
+      const minimizedContext = filterDbContext(message, dbContext);
 
       // System instructions prompt
       const systemInstruction = `You are StockWise AI Assistant. You are a fast, precise business assistant for shop owners.
@@ -2352,12 +2468,13 @@ CRITICAL RULES FOR RESPONSE STYLE:
 Current Server Time (for calculating "today", "this week", "this month" etc.): ${currentTime}
 
 Store Database Content Context (Isolating current user's store data):
-${JSON.stringify(dbContext, null, 2)}`;
+${JSON.stringify(minimizedContext)}`;
 
-      // Construct conversation list
+      // Construct conversation list (Capping history list to keep overhead low)
       const contents: any[] = [];
       if (Array.isArray(history)) {
-        history.forEach((h: any) => {
+        const trimmedHistory = history.slice(-6); // Keep last 3 turns of conversation only
+        trimmedHistory.forEach((h: any) => {
           if (h.text && h.role) {
             contents.push({
               role: h.role === 'assistant' ? 'model' : 'user',
@@ -2384,7 +2501,8 @@ ${JSON.stringify(dbContext, null, 2)}`;
             contents,
             config: {
               systemInstruction,
-              temperature: 0.2, // Low temperature for high precision business metrics
+              temperature: 0.15, // Lower temperature means faster, ultra-deterministic outputs
+              maxOutputTokens: 500, // Reduced token length directly lowers latency
             }
           });
           break; // Succeeded! Break the retry loop
@@ -2392,7 +2510,6 @@ ${JSON.stringify(dbContext, null, 2)}`;
           console.info(`[AI Chat] Note: Attempt ${attempt} with model ${modelUsed} requested a temporary retry context.`);
 
           if (attempt === maxRetries) {
-            // Log final failure cleanly but don't register high-severity errors
             console.info('[AI Chat] Note: All model attempts finished. Serving a friendly fallback message.');
             break;
           }
@@ -2416,14 +2533,12 @@ ${JSON.stringify(dbContext, null, 2)}`;
             }
           }
 
-          // Delay with exponential backoff before retrying (exponentially longer and more robust to clear spikes)
           const delay = attempt * 1200;
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
 
       if (!response) {
-        // Conversationally degrade so we avoid triggering a hard browser error/console fault
         return res.json({
           reply: `⚠️ **Umujyanama mu by'ubucuruzi ntabonetse neza kugeza sasa.**\n\nIbi biterwa n'uko imiyoboro yacu ya AI icyarimwe iri kwakira ubusabe bwinshi cyane, cyangwa ikaba ifite ikibazo cy'agateganyo cy'ingorane za tekiniki.\n\n**Icyo wakora:**\n• Ongera ugerageze mu kanya gato (nyuma y'umunota 1 cyangwa 2).\n• Urashobora gukomeza gukora ibindi bikorwa bya store yawe kuko amakuru yawe yose aruzuye neza mu bubiko.`
         });

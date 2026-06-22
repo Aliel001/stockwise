@@ -1,1 +1,187 @@
 @import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+/* Smooth transition for theme toggles */
+* {
+  transition-property: background-color, border-color, text-decoration-color, fill, stroke;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+/* Polished global dark theme class overrides */
+.dark body {
+  background-color: #030712 !important;
+  color: #f8fafc !important;
+}
+
+.dark .bg-slate-50,
+.dark .bg-slate-100,
+.dark .bg-gray-50,
+.dark .bg-gray-100 {
+  background-color: #030712 !important;
+}
+
+.dark .bg-white {
+  background-color: #0f172a !important; /* Premium Slate-900 card backdrop */
+}
+
+/* Modal layers */
+.dark .bg-white.rounded-2xl {
+  background-color: #0f172a !important;
+  border-color: #1e293b !important;
+}
+
+.dark .bg-slate-50\/50,
+.dark .bg-slate-50\/40 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+/* Borders mapping */
+.dark .border-slate-50,
+.dark .border-slate-100,
+.dark .border-slate-150,
+.dark .border-slate-200,
+.dark .border-slate-250,
+.dark .border-slate-200\/60,
+.dark .border-slate-200\/65,
+.dark .border-slate-350,
+.dark .border-gray-100,
+.dark .border-gray-200 {
+  border-color: #1e293b !important;
+}
+
+/* Text adaptations */
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-705,
+.dark .text-slate-700,
+.dark .text-gray-900,
+.dark .text-gray-800 {
+  color: #f8fafc !important; /* Premium high-contrast off-white */
+}
+
+.dark .text-slate-650,
+.dark .text-slate-600,
+.dark .text-slate-500,
+.dark .text-gray-600,
+.dark .text-gray-500 {
+  color: #cbd5e1 !important; /* Muted slate-300 */
+}
+
+.dark .text-slate-400,
+.dark .text-gray-400 {
+  color: #94a3b8 !important; /* Subtle slate-400 */
+}
+
+/* Inputs, dropdown selectors and Textareas */
+.dark input, 
+.dark select, 
+.dark textarea {
+  background-color: #090d16 !important;
+  border-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+.dark input:focus, 
+.dark select:focus, 
+.dark textarea:focus {
+  border-color: #6366f1 !important;
+  background-color: #070a10 !important;
+}
+
+.dark input::placeholder {
+  color: #475569 !important;
+}
+
+.dark .bg-slate-50 input,
+.dark .bg-slate-50 select {
+  background-color: #090d16 !important;
+}
+
+/* Adaptive Alert Cards */
+.dark .bg-indigo-50 {
+  background-color: rgba(99, 102, 241, 0.08) !important;
+  border-color: rgba(99, 102, 241, 0.2) !important;
+}
+.dark .text-indigo-900,
+.dark .text-indigo-800,
+.dark .text-indigo-700,
+.dark .text-indigo-650,
+.dark .text-indigo-600 {
+  color: #a5b4fc !important; /* Soft indigo-300 */
+}
+
+.dark .bg-emerald-50 {
+  background-color: rgba(16, 185, 129, 0.08) !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+.dark .text-emerald-800,
+.dark .text-emerald-700,
+.dark .text-emerald-600 {
+  color: #6ee7b7 !important; /* Soft emerald-300 */
+}
+
+.dark .bg-rose-50,
+.dark .bg-red-50 {
+  background-color: rgba(244, 63, 94, 0.08) !important;
+  border-color: rgba(244, 63, 94, 0.2) !important;
+}
+.dark .text-rose-800,
+.dark .text-rose-700,
+.dark .text-rose-650,
+.dark .text-rose-600,
+.dark .text-red-650,
+.dark .text-red-600 {
+  color: #fca5a5 !important; /* Soft rose-300 */
+}
+
+.dark .bg-amber-50,
+.dark .bg-yellow-50 {
+  background-color: rgba(245, 158, 11, 0.08) !important;
+  border-color: rgba(245, 158, 11, 0.2) !important;
+}
+.dark .text-amber-800,
+.dark .text-amber-700,
+.dark .text-amber-600 {
+  color: #fde047 !important; /* Soft yellow-300 */
+}
+
+/* Secondary Actions button adaptation */
+.dark .bg-slate-50.text-slate-700,
+.dark .bg-slate-100.text-slate-700 {
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+  border-color: #334155 !important;
+}
+.dark .bg-slate-50.text-slate-705:hover,
+.dark .bg-slate-50.text-slate-700:hover,
+.dark .bg-slate-100.text-slate-700:hover {
+  background-color: #334155 !important;
+}
+
+/* Interactive tables and lists */
+.dark .hover\:bg-slate-50\/40:hover {
+  background-color: rgba(30, 41, 59, 0.45) !important;
+}
+.dark .divide-slate-100 > * + * {
+  border-color: #1e293b !important;
+}
+
+/* Chart visualization overrides */
+.dark .recharts-cartesian-grid-horizontal line,
+.dark .recharts-cartesian-grid-vertical line {
+  stroke: #1e293b !important;
+}
+.dark .recharts-text {
+  fill: #94a3b8 !important;
+}
+.dark .recharts-legend-item-text {
+  color: #cbd5e1 !important;
+}
+
+/* Floating AI assistant and chat components compatibility overrides */
+.dark .floating-chat-override {
+  background-color: #0b0f19 !important;
+  border-color: #1e293b !important;
+}
