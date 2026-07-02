@@ -37,9 +37,14 @@ export interface Sale {
 export interface Notification {
   id: string;
   message: string;
-  type: 'low_stock' | 'info';
+  type: 'low_stock' | 'critical_stock' | 'out_of_stock' | 'info';
   isRead: boolean;
   userEmail: string;
+  productId?: string;
+  productName?: string;
+  notificationType?: 'low_stock' | 'critical_stock' | 'out_of_stock' | 'info';
+  stockRemaining?: number;
+  minimumStock?: number;
   createdAt: string; // ISO String
 }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, UserCheck, ShieldAlert, Ban, Clock, Search, Shield, RefreshCw, Bell, Trash2 } from 'lucide-react';
+import { Users, UserCheck, ShieldAlert, Ban, Clock, Search, Shield, RefreshCw, Bell, Trash2, History, Calendar } from 'lucide-react';
 
 interface SuperAdminUser {
   id: string;
@@ -38,6 +38,60 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [systemLogs, setSystemLogs] = useState<any[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [clearingLogs, setClearingLogs] = useState(false);
+
+  const fetchSystemLogs = async () => {
+    try {
+      setLogsLoading(true);
+      const res = await fetch('/api/activity-logs', {
+        headers: {
+          'x-user-email': currentUserEmail,
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSystemLogs(data);
+      }
+    } catch (err: any) {
+      console.error('Failed to load activity logs:', err);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const handleClearAllLogs = async () => {
+    const confirmed = window.confirm(
+      "Ese uremereye gusiba amateka yose y'akazi burundu? / Are you sure you want to permanently clear all system activity logs? This action cannot be undone."
+    );
+    if (!confirmed) return;
+
+    try {
+      setClearingLogs(true);
+      setErrorMsg(null);
+      setSuccessMsg(null);
+      const response = await fetch('/api/activity-logs', {
+        method: 'DELETE',
+        headers: {
+          'x-user-email': currentUserEmail,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to clear activity logs.');
+      }
+
+      const data = await response.json();
+      setSuccessMsg(data.message || 'System activity logs successfully cleared!');
+      await fetchSystemLogs();
+      await fetchUsersAndStats();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Could not clear system activity logs.');
+    } finally {
+      setClearingLogs(false);
+    }
+  };
 
   const fetchUsersAndStats = async () => {
     try {
@@ -76,6 +130,7 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
 
   useEffect(() => {
     fetchUsersAndStats();
+    fetchSystemLogs();
   }, [currentUserEmail]);
 
   const handleUpdateStatus = async (userId: string, targetStatus: string) => {
@@ -514,6 +569,60 @@ export default function SuperAdminView({ currentUserEmail }: SuperAdminViewProps
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Platform Audit & Telemetry Activity Logs Section */}
+      <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-150 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 tracking-tight font-sans flex items-center gap-1.5">
+              <History className="w-4 h-4 text-indigo-600" />
+              Platform Operational Telemetry Logs
+            </h3>
+            <p className="text-[10px] text-slate-500 mt-0.5">
+              Verify platform operations history, audit logs, and clear system telemetry history database-wide.
+            </p>
+          </div>
+
+          <button
+            id="btn_clear_telemetry_logs_sa"
+            onClick={handleClearAllLogs}
+            disabled={clearingLogs || logsLoading}
+            className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 disabled:opacity-50 text-xs font-bold rounded-lg flex items-center space-x-1.5 select-none transition-colors border border-rose-200/40"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Purge Database Logs</span>
+          </button>
+        </div>
+
+        {logsLoading ? (
+          <div className="py-8 text-center">
+            <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+            <p className="text-[10px] text-slate-400">Loading system logs ledger...</p>
+          </div>
+        ) : systemLogs.length === 0 ? (
+          <div className="py-8 text-center">
+            <p className="text-xs text-slate-400">All activity logs have been purged from the system.</p>
+          </div>
+        ) : (
+          <div className="max-h-60 overflow-y-auto space-y-2.5 pr-2">
+            {systemLogs.slice(0, 50).map((log: any) => (
+              <div key={log.id} className="p-3 bg-slate-50 rounded-lg border border-slate-100 flex items-start justify-between gap-3 text-xs">
+                <div className="space-y-1">
+                  <p className="font-semibold text-slate-800 font-sans leading-snug">{log.action}</p>
+                  <div className="flex items-center space-x-2 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                    <span>by {log.performedBy || 'System'}</span>
+                    <span>•</span>
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {log.createdAt ? new Date(log.createdAt).toLocaleString() : ''}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

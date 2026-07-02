@@ -21,7 +21,18 @@ interface ProductsViewProps {
 }
 
 export default function ProductsView({ products }: ProductsViewProps) {
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(() => {
+    try {
+      const saved = localStorage.getItem('search_product_name') || '';
+      if (saved) {
+        localStorage.removeItem('search_product_name');
+      }
+      return saved;
+    } catch (e) {
+      console.warn('localStorage read blocked by browser privacy/sandboxing:', e);
+      return '';
+    }
+  });
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 

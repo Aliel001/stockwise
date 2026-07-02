@@ -366,3 +366,49 @@ export async function clearAllData() {
 
   return safeReadJson(response);
 }
+
+// 14. Get Notification Settings
+export async function getNotificationSettings() {
+  const email = auth.currentUser?.email;
+  if (!email) throw new Error('Unauthenticated');
+
+  const response = await fetch('/api/settings/notifications', {
+    headers: getHeaders(),
+  });
+
+  if (!response.ok) {
+    const errorMsg = await safeReadError(response, 'Failed to fetch notification settings');
+    throw new Error(errorMsg);
+  }
+
+  return safeReadJson(response);
+}
+
+// 15. Update Notification Settings
+export async function updateNotificationSettings(settings: {
+  enableNotifications: boolean;
+  desktopNotifications: boolean;
+  mobilePushNotifications: boolean;
+  lowStockAlerts: boolean;
+  criticalStockAlerts: boolean;
+  outOfStockAlerts: boolean;
+}) {
+  const email = auth.currentUser?.email;
+  if (!email) throw new Error('Unauthenticated');
+
+  const response = await fetch('/api/settings/notifications', {
+    method: 'POST',
+    headers: {
+      ...getHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(settings),
+  });
+
+  if (!response.ok) {
+    const errorMsg = await safeReadError(response, 'Failed to update notification settings');
+    throw new Error(errorMsg);
+  }
+
+  return safeReadJson(response);
+}

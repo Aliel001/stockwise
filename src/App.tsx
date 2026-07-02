@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { auth, onAuthStateChanged, LocalUser as User } from './firebase';
-import { Page, Product, Sale, StockIn, Notification, ActivityLog } from './types';
+import { Page, Product, Sale, StockIn, Notification as StockNotification, ActivityLog } from './types';
 import { 
   subscribeProducts,
   subscribeSales,
@@ -30,8 +30,12 @@ export default function App() {
 
   // Theme State (Persisted in localStorage, respects system theme if no preference saved)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'dark' || saved === 'light') return saved;
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch (e) {
+      console.warn('localStorage read blocked by browser privacy/sandboxing:', e);
+    }
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
       return 'dark';
     }
@@ -44,7 +48,11 @@ export default function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
-    localStorage.setItem('theme', theme);
+    try {
+      localStorage.setItem('theme', theme);
+    } catch (e) {
+      console.warn('localStorage write blocked by browser privacy/sandboxing:', e);
+    }
   }, [theme]);
 
   const toggleTheme = () => {
@@ -55,7 +63,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [stockIns, setStockIns] = useState<StockIn[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<StockNotification[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   // 1. Validate Connection to Backend on initial application boot
@@ -105,6 +113,56 @@ export default function App() {
       unsubLogs();
     };
   }, [currentUser]);
+
+  const prevNotificationsRef = useRef<StockNotification[]>([]);
+
+  useEffect(() => {
+    if (notifications.length === 0) {
+      prevNotificationsRef.current = [];
+      return;
+    }
+
+    // Only alert for NEW unread notifications to avoid spamming existing ones on boot
+    if (prevNotificationsRef.current.length > 0) {
+      const newUnread = notifications.filter(n => {
+        const isNew = !prevNotificationsRef.current.some(prev => prev.id === n.id);
+        return isNew && !n.isRead;
+      });
+
+      newUnread.forEach(n => {
+        // Native desktop notifications if granted
+        if ('Notification' in window && Notification.permission === 'granted') {
+          let title = '⚠️ Low Stock Warning';
+          if (n.type === 'out_of_stock') {
+            title = '❌ Out of Stock Alert';
+          } else if (n.type === 'critical_stock') {
+            title = '🚨 Critical Stock Alert';
+          }
+          
+          const nativeNotif = new window.Notification(title, {
+            body: n.message,
+            icon: '/favicon.ico',
+          });
+
+          nativeNotif.onclick = () => {
+            window.focus();
+            if (n.productName) {
+              try {
+                localStorage.setItem('search_product_name', n.productName);
+              } catch (e) {
+                console.warn('localStorage write blocked by browser privacy/sandboxing:', e);
+              }
+              setCurrentPage(Page.Products);
+            } else {
+              setCurrentPage(Page.Notifications);
+            }
+          };
+        }
+      });
+    }
+
+    prevNotificationsRef.current = notifications;
+  }, [notifications]);
 
   if (authChecking) {
     return (
@@ -162,7 +220,7 @@ export default function App() {
           )}
 
           {currentPage === Page.Notifications && (
-            <NotificationsView notifications={notifications} />
+            <NotificationsView notifications={notifications} onNavigate={setCurrentPage} />
           )}
 
           {currentPage === Page.ActivityLogs && (

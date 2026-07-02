@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+@theme {
+  --variant-dark: class;
+}
+
 @variant dark (&:where(.dark, .dark *));
 
 /* Smooth transition for theme toggles */

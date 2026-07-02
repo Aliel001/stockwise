@@ -310,7 +310,25 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
     await client.query(`ALTER TABLE stock_ins ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
     await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS business_id VARCHAR(255);`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS product_name VARCHAR(255);`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50);`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS stock_remaining INTEGER;`);
+    await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS minimum_stock INTEGER;`);
     await client.query(`ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS store_id VARCHAR(255);`);
+
+    // Notification settings configuration table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notification_settings (
+        user_email VARCHAR(255) PRIMARY KEY,
+        enable_notifications BOOLEAN DEFAULT TRUE,
+        desktop_notifications BOOLEAN DEFAULT TRUE,
+        mobile_push_notifications BOOLEAN DEFAULT TRUE,
+        low_stock_alerts BOOLEAN DEFAULT TRUE,
+        critical_stock_alerts BOOLEAN DEFAULT TRUE,
+        out_of_stock_alerts BOOLEAN DEFAULT TRUE
+      );
+    `);
 
     // Normalized Products Table
     await client.query(`
@@ -384,6 +402,12 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
         type VARCHAR(50) DEFAULT 'info',
         is_read BOOLEAN DEFAULT FALSE,
         user_email VARCHAR(255) NOT NULL,
+        store_id VARCHAR(255),
+        business_id VARCHAR(255),
+        product_name VARCHAR(255),
+        notification_type VARCHAR(50),
+        stock_remaining INTEGER,
+        minimum_stock INTEGER,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -538,6 +562,135 @@ async function initializeSchema(retries = 5, delay = 2500): Promise<void> {
     if (client) {
       client.release();
     }
+  }
+}
+
+async function checkProductStockAlerts(productId: string, client: any) {
+  try {
+    // 1. Fetch current stock, product details, store_id, and created_by
+    const productRes = await client.query(`
+      SELECT p.name, p.min_stock as "minStock", p.store_id as "storeId", p.created_by as "createdBy",
+             COALESCE(s.quantity, 0)::int as quantity
+      FROM products p
+      LEFT JOIN inventory_stock s ON p.id = s.product_id
+      WHERE p.id = $1;
+    `, [productId]);
+
+    if (productRes.rows.length === 0) return;
+
+    const { name, minStock, storeId, createdBy, quantity } = productRes.rows[0];
+
+    // Determine current notification level
+    let currentLevel: 'out_of_stock' | 'critical_stock' | 'low_stock' | 'none' = 'none';
+    let message = '';
+
+    if (quantity === 0) {
+      currentLevel = 'out_of_stock';
+      message = `❌ Out of Stock\n${name} is out of stock.`;
+    } else if (quantity <= 0.25 * minStock) {
+      currentLevel = 'critical_stock';
+      message = `🚨 Critical Stock\n${name} is critically low.\nRemaining stock: ${quantity}`;
+    } else if (quantity <= minStock) {
+      currentLevel = 'low_stock';
+      message = `⚠️ Low Stock\n${name} is running low.\nRemaining stock: ${quantity}`;
+    }
+
+    if (currentLevel === 'none') {
+      return; // Stock is above minimum threshold, no alerts needed
+    }
+
+    // Check user/business settings for notification preferences
+    const settingsRes = await client.query(`
+      SELECT enable_notifications as "enableNotifications",
+             low_stock_alerts as "lowStockAlerts",
+             critical_stock_alerts as "criticalStockAlerts",
+             out_of_stock_alerts as "outOfStockAlerts"
+      FROM notification_settings
+      WHERE user_email = $1;
+    `, [createdBy]);
+
+    const settings = settingsRes.rows[0] || {
+      enableNotifications: true,
+      lowStockAlerts: true,
+      criticalStockAlerts: true,
+      outOfStockAlerts: true
+    };
+
+    if (settings.enableNotifications === false) {
+      return; // Disabled globally
+    }
+
+    if (currentLevel === 'low_stock' && settings.lowStockAlerts === false) {
+      return;
+    }
+    if (currentLevel === 'critical_stock' && settings.criticalStockAlerts === false) {
+      return;
+    }
+    if (currentLevel === 'out_of_stock' && settings.outOfStockAlerts === false) {
+      return;
+    }
+
+    // Fetch last notification for this product to prevent duplicate alerts/spam
+    const lastNotifRes = await client.query(`
+      SELECT id, type, created_at as "createdAt", stock_remaining as "stockRemaining"
+      FROM notifications
+      WHERE product_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1;
+    `, [productId]);
+
+    let shouldNotify = false;
+
+    if (lastNotifRes.rows.length === 0) {
+      shouldNotify = true;
+    } else {
+      const lastNotif = lastNotifRes.rows[0];
+      const lastType = lastNotif.type;
+
+      if (lastType !== currentLevel) {
+        shouldNotify = true; // Level changed (e.g. low -> critical)
+      } else {
+        // Same level. Check if stock was restocked above minimum and dropped back down.
+        const lastNotifTime = lastNotif.createdAt;
+        const stockInRes = await client.query(`
+          SELECT COALESCE(SUM(quantity), 0)::int as total_restocked
+          FROM stock_ins
+          WHERE product_id = $1 AND created_at > $2;
+        `, [productId, lastNotifTime]);
+
+        const totalRestocked = stockInRes.rows[0].total_restocked;
+        const lastStock = lastNotif.stockRemaining !== null ? lastNotif.stockRemaining : 0;
+
+        if (lastStock + totalRestocked > minStock) {
+          shouldNotify = true;
+        }
+      }
+    }
+
+    if (shouldNotify) {
+      const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
+      await client.query(`
+        INSERT INTO notifications (
+          id, product_id, message, type, is_read, user_email, store_id, 
+          business_id, product_name, notification_type, stock_remaining, minimum_stock
+        )
+        VALUES ($1, $2, $3, $4, FALSE, $5, $6, $7, $8, $9, $10, $11);
+      `, [
+        notifId,
+        productId,
+        message,
+        currentLevel,
+        createdBy,
+        storeId,
+        storeId,
+        name,
+        currentLevel,
+        quantity,
+        minStock
+      ]);
+    }
+  } catch (err) {
+    console.error(`[checkProductStockAlerts Error] failed for product ${productId}:`, err);
   }
 }
 
@@ -1883,6 +2036,8 @@ app.use(cookieParser());
         ['log_' + productId, `Added product "${name}" with initial stock of ${quantity}`, req.userEmail, req.userStoreId]
       );
 
+      await checkProductStockAlerts(productId, client);
+
       await client.query('COMMIT');
       res.status(201).json({ success: true, id: productId });
     } catch (err: any) {
@@ -1919,6 +2074,8 @@ app.use(cookieParser());
          VALUES ($1, $2, $3, $4);`,
         ['log_' + Math.random().toString(36).substring(2, 11), `Updated details of product "${isOwner.rows[0].name}"`, req.userEmail, req.userStoreId]
       );
+
+      await checkProductStockAlerts(id, client);
 
       await client.query('COMMIT');
       res.json({ success: true });
@@ -2036,6 +2193,8 @@ app.use(cookieParser());
         ['log_' + Math.random().toString(36).substring(2, 11), `Restocked ${quantity} units of "${prodName}" (Purchase Price: ${activePurchasePrice} RWF)`, req.userEmail, req.userStoreId]
       );
 
+      await checkProductStockAlerts(productId, client);
+
       await client.query('COMMIT');
       res.status(201).json({ success: true, id: stockInId });
     } catch (err: any) {
@@ -2134,16 +2293,8 @@ app.use(cookieParser());
         ['log_' + Math.random().toString(36).substring(2, 11), `Sold ${quantity} units of "${product.name}" for a total of RWF ${Math.round(totalPrice).toLocaleString()}`, req.userEmail, req.userStoreId]
       );
 
-      // 5. Build dynamic alerts trigger inside notifications if goes low_stock
-      if (newQty <= product.min_stock) {
-        const notifId = 'notif_' + Math.random().toString(36).substring(2, 11);
-        const warningMsg = `"${product.name}" is running low (${newQty} left). Please restock soon!`;
-        await client.query(
-          `INSERT INTO notifications (id, product_id, message, type, is_read, user_email, store_id)
-           VALUES ($1, $2, $3, 'low_stock', FALSE, $4, $5);`,
-          [notifId, productId, warningMsg, req.userEmail, req.userStoreId]
-        );
-      }
+      // 5. Build dynamic alerts trigger inside notifications
+      await checkProductStockAlerts(productId, client);
 
       await client.query('COMMIT');
       res.status(201).json({ success: true, id: saleId });
@@ -2163,7 +2314,10 @@ app.use(cookieParser());
       if (req.userRole === 'SUPER_ADMIN') {
         const q = `
           SELECT id, message, type, is_read as "isRead", 
-                 user_email as "userEmail", created_at as "createdAt"
+                 user_email as "userEmail", created_at as "createdAt",
+                 product_id as "productId", product_name as "productName",
+                 notification_type as "notificationType", stock_remaining as "stockRemaining",
+                 minimum_stock as "minimumStock"
           FROM notifications
           ORDER BY created_at DESC;
         `;
@@ -2171,7 +2325,10 @@ app.use(cookieParser());
       } else {
         const q = `
           SELECT id, message, type, is_read as "isRead", 
-                 user_email as "userEmail", created_at as "createdAt"
+                 user_email as "userEmail", created_at as "createdAt",
+                 product_id as "productId", product_name as "productName",
+                 notification_type as "notificationType", stock_remaining as "stockRemaining",
+                 minimum_stock as "minimumStock"
           FROM notifications
           WHERE store_id = $1
           ORDER BY created_at DESC;
@@ -2210,6 +2367,79 @@ app.use(cookieParser());
       } else {
         await pool.query('DELETE FROM notifications WHERE id = $1 AND store_id = $2;', [id, req.userStoreId]);
       }
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/settings/notifications
+  app.get('/api/settings/notifications', requireUser, async (req, res) => {
+    try {
+      const result = await pool.query(`
+        SELECT enable_notifications as "enableNotifications",
+               desktop_notifications as "desktopNotifications",
+               mobile_push_notifications as "mobilePushNotifications",
+               low_stock_alerts as "lowStockAlerts",
+               critical_stock_alerts as "criticalStockAlerts",
+               out_of_stock_alerts as "outOfStockAlerts"
+        FROM notification_settings
+        WHERE user_email = $1;
+      `, [req.userEmail]);
+
+      if (result.rows.length === 0) {
+        return res.json({
+          enableNotifications: true,
+          desktopNotifications: true,
+          mobilePushNotifications: true,
+          lowStockAlerts: true,
+          criticalStockAlerts: true,
+          outOfStockAlerts: true
+        });
+      }
+      res.json(result.rows[0]);
+    } catch (err: any) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/settings/notifications
+  app.post('/api/settings/notifications', requireUser, async (req, res) => {
+    const { 
+      enableNotifications, 
+      desktopNotifications, 
+      mobilePushNotifications, 
+      lowStockAlerts, 
+      criticalStockAlerts, 
+      outOfStockAlerts 
+    } = req.body;
+
+    try {
+      await pool.query(`
+        INSERT INTO notification_settings (
+          user_email, enable_notifications, desktop_notifications, 
+          mobile_push_notifications, low_stock_alerts, critical_stock_alerts, out_of_stock_alerts
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_email) DO UPDATE SET
+          enable_notifications = EXCLUDED.enable_notifications,
+          desktop_notifications = EXCLUDED.desktop_notifications,
+          mobile_push_notifications = EXCLUDED.mobile_push_notifications,
+          low_stock_alerts = EXCLUDED.low_stock_alerts,
+          critical_stock_alerts = EXCLUDED.critical_stock_alerts,
+          out_of_stock_alerts = EXCLUDED.out_of_stock_alerts;
+      `, [
+        req.userEmail,
+        enableNotifications ?? true,
+        desktopNotifications ?? true,
+        mobilePushNotifications ?? true,
+        lowStockAlerts ?? true,
+        criticalStockAlerts ?? true,
+        outOfStockAlerts ?? true
+      ]);
+
       res.json({ success: true });
     } catch (err: any) {
       console.error(err);
